@@ -1,127 +1,93 @@
-# BetterDLP 🛡️
+# BetterDLP
 
-A browser extension for **Data Loss Prevention (DLP)** — blocks sensitive document uploads before they leave your organization.
+Chrome extension that blocks document uploads based on actual file content, not the filename.
 
-Built as a security research/educational project demonstrating real-world DLP concepts in a browser extension context.
-
----
-
-## What It Does
-
-BetterDLP intercepts file uploads **before** they reach any server and blocks documents based on their **real file type** (magic bytes), not their filename or extension.
-
-### Blocked File Types
-
-| Format | Detection Method |
-|---|---|
-| DOCX / XLSX / PPTX | ZIP magic bytes + internal Office XML structure |
-| DOC / XLS / PPT (legacy) | OLE2 magic bytes (`D0 CF 11 E0`) |
-| PDF | Magic bytes (`%PDF`) |
-| RTF | Magic bytes (`{\rt`) |
-| ZIP containing documents | JSZip inspection of internal paths |
-| Password-protected ZIP | Encryption flag in ZIP header (bit 0 of general purpose flags) |
-| RAR / 7-Zip | Magic bytes — cannot inspect, blocked by default |
-| GZIP | Magic bytes — cannot inspect, blocked by default |
-| Nested archives | Recursive inspection up to depth 3 |
-| Zip bombs | Uncompressed size threshold (100MB) |
-
-### Intercepted Upload Vectors
-
-- `<input type="file">` — standard file picker (including dynamically added inputs via `MutationObserver`)
-- Drag & drop — `drop` event at document level
-- Clipboard paste — `paste` event (`Ctrl+V` a file)
-- `fetch()` API — monkey-patched at `document_start`
-- `XMLHttpRequest.send()` — monkey-patched at `document_start`
+Tired of DLP tools that get bypassed by just renaming `report.docx` to `photo.jpg`. This checks magic bytes instead.
 
 ---
 
-## Features
+## How it works
 
-- **Real file type detection** — rename `report.docx` to `photo.jpg`, it still gets blocked
-- **Office-in-ZIP detection** — detects DOCX/XLSX/PPTX even when renamed to `.zip`
-- **Encrypted archive blocking** — password-protected files are blocked since contents can't be verified
-- **Shadow DOM modal** — block UI uses `mode: 'closed'` shadow root, immune to page JS interference
-- **Audit log** — all block/allow events stored in `chrome.storage.local` with timestamp, site, vector, and reason
-- **Domain scope config** — block everywhere, block on specific domains, or allow on specific domains
-- **Export logs** — download audit log as JSON
-- **Badge counter** — extension icon shows number of blocked attempts
+Intercepts file uploads before they hit the network and reads the first few bytes of the file to identify the real format. A DOCX is a ZIP under the hood — so it also unpacks ZIPs and checks what's inside.
 
----
+Blocked formats: DOCX, XLSX, PPTX, DOC, XLS, PPT, PDF, RTF, RAR, 7z, GZIP, and any ZIP that contains one of the above.
 
-## Installation (Development Mode)
-
-1. Clone this repo
-2. Open Chrome → `chrome://extensions`
-3. Enable **Developer mode** (top right)
-4. Click **Load unpacked** → select the `BetterDLP` folder
-5. The extension is now active on all sites
+Upload vectors covered:
+- `<input type="file">` (including dynamically injected ones)
+- Drag and drop
+- Clipboard paste
+- `fetch()` and `XMLHttpRequest` (patched before page scripts load)
 
 ---
 
-## Project Structure
+## Why not just check the extension?
+
+Because it's trivially bypassed. Rename the file, done. Magic bytes can't be faked without a hex editor — and even then, a renamed DOCX is still a ZIP with `word/document.xml` inside, which this catches too.
+
+Edge cases handled:
+- ZIP containing a document → blocked
+- Password-protected ZIP → blocked (can't verify contents)
+- Nested ZIP (ZIP inside ZIP) → recursive inspection up to 3 levels
+- RAR / 7z → blocked by default (no reliable JS parser)
+- Zip bombs → blocked if uncompressed size > 100MB
+
+---
+
+## Install
+
+1. Clone the repo
+2. Go to `chrome://extensions`
+3. Turn on Developer mode
+4. Load unpacked → select this folder
+
+---
+
+## Structure
 
 ```
-BetterDLP/
-├── src/
-│   ├── content/
-│   │   ├── detector.js       Magic bytes detection + ZIP inspection
-│   │   ├── interceptor.js    Upload vector interception (input/drop/paste/XHR/fetch)
-│   │   └── ui.js             Shadow DOM block modal
-│   ├── background/
-│   │   └── service-worker.js Badge updates, storage init
-│   ├── popup/
-│   │   ├── popup.html        Extension popup UI
-│   │   └── popup.js          Dashboard, logs, settings
-│   └── lib/
-│       └── jszip.min.js      ZIP inspection library
-├── icons/
-├── manifest.json             Manifest V3
-└── README.md
+src/
+  content/
+    detector.js      magic bytes + ZIP inspection
+    interceptor.js   hooks all upload vectors
+    ui.js            block modal (shadow DOM, closed mode)
+  background/
+    service-worker.js
+  popup/
+    popup.html / popup.js   dashboard, audit log, settings
+  lib/
+    jszip.min.js
+tests/
+  run-tests.mjs      node-based test runner
+  fixtures/          real binary test files
 ```
 
 ---
 
-## Known Limitations
+## Tests
 
-These are **by design** — client-side DLP is one layer of a defense-in-depth strategy:
+```bash
+node tests/run-tests.mjs
+```
 
-| Limitation | Why |
-|---|---|
-| User can disable the extension | Requires enterprise MDM/policy to force-install |
-| Incognito mode disables extensions by default | Enable via `chrome://extensions` or enterprise policy |
-| Direct API calls (curl, Postman) bypass the browser | Requires server-side DLP validation |
-| WebSocket file transfers | Protocol-specific, not inspectable generically |
-| Images of documents (screenshots) | Requires ML/OCR — out of scope for MVP |
-| Encrypted DOCX (password-protected Word files) | Cannot inspect content — flagged as unknown |
-| Split file uploads (chunked) | Partial-file magic bytes may be undetectable |
-
-BetterDLP is designed to **prevent accidental and low-effort leaks**. It is not a substitute for network-level DLP, endpoint agents, or server-side validation.
+10 test cases using real binary files — not mocked magic bytes. Covers the rename bypass, nested ZIPs, encrypted archives, clean files (no false positives), etc.
 
 ---
 
-## Tech Stack
+## Limitations
 
-| Component | Technology |
-|---|---|
-| Extension platform | Chrome Manifest V3 |
-| File inspection | JavaScript `FileReader` API + magic bytes |
-| ZIP/Office inspection | [JSZip](https://stuk.github.io/jszip/) |
-| Storage | `chrome.storage.local` / `chrome.storage.sync` |
-| Block UI | Shadow DOM (`mode: 'closed'`) |
+This runs in the browser so it only catches what goes through the browser. Direct API calls (curl, Postman, scripts) bypass it completely. Real DLP needs a network proxy or endpoint agent on top of this — this is just the browser layer.
+
+Other known gaps:
+- User can disable the extension
+- Incognito disables extensions by default
+- Screenshots of documents (needs OCR, out of scope)
+- Chunked/split uploads
 
 ---
 
 ## Roadmap
 
-- [ ] V2: ML-based content classification (TensorFlow.js)
-- [ ] V2: TAR/GZIP recursive inspection (pako.js + js-untar)
-- [ ] V2: Indonesian-specific sensitive patterns (NIK, NPWP, BPJS)
-- [ ] V2: Firefox support
-- [ ] V3: Enterprise policy deployment guide
-- [ ] V3: Central reporting endpoint (optional)
-
----
-
-## Disclaimer
-
-This project is built for **educational and security research purposes**. It demonstrates browser-based DLP concepts and known bypass mitigations. It is not a production-grade enterprise DLP solution.
+- [ ] Indonesian ID patterns (NIK, NPWP)
+- [ ] TensorFlow.js classifier for content-based detection
+- [ ] Firefox support
+- [ ] TAR/GZIP recursive inspection
