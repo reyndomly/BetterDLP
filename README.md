@@ -1,5 +1,7 @@
 # BetterDLP
 
+![Tests](https://github.com/reyndomly/BetterDLP/actions/workflows/test.yml/badge.svg)
+
 Chrome extension that enforces Data Loss Prevention by blocking document uploads based on actual file content — not filename or extension.
 
 ---
