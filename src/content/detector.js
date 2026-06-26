@@ -168,6 +168,29 @@ async function detectFileType(bytes, arrayBuffer = null, depth = 0) {
 // Formats with no magic bytes — detection falls back to extension only.
 const NO_MAGIC_EXTENSIONS = new Set(['csv', 'tsv', 'txt']);
 
+// Expected magic bytes for common binary formats used as disguise targets.
+const BINARY_EXT_MAGIC = {
+  jpg:  [0xFF, 0xD8, 0xFF],
+  jpeg: [0xFF, 0xD8, 0xFF],
+  png:  [0x89, 0x50, 0x4E, 0x47],
+  gif:  [0x47, 0x49, 0x46, 0x38],
+  bmp:  [0x42, 0x4D],
+  ico:  [0x00, 0x00, 0x01, 0x00],
+  mp4:  [0x00, 0x00, 0x00],
+  webp: [0x52, 0x49, 0x46, 0x46],
+};
+
+function isPlainText(bytes) {
+  const sample = bytes.slice(0, 512);
+  for (const b of sample) {
+    if (b === 0x09 || b === 0x0A || b === 0x0D) continue;
+    if (b >= 0x20 && b <= 0x7E) continue;
+    if (b === 0x00) return false;
+    if (b < 0x09) return false;
+  }
+  return true;
+}
+
 async function inspectFile(file) {
   const ext = (file.name || '').split('.').pop().toLowerCase();
   if (NO_MAGIC_EXTENSIONS.has(ext)) {
@@ -175,7 +198,6 @@ async function inspectFile(file) {
   }
 
   const headerBytes = await readFirstBytes(file, 8);
-  const firstResult = detectFileType(headerBytes);
 
   // For ZIP-based files we need the full buffer
   if (matchesMagic(headerBytes, MAGIC_BYTES.ZIP.bytes)) {
@@ -184,7 +206,17 @@ async function inspectFile(file) {
     return await detectFileType(fullBytes, arrayBuffer, 0);
   }
 
-  return await firstResult;
+  const result = await detectFileType(headerBytes, null, 0);
+  if (result.blocked) return result;
+
+  // File passed all magic byte checks — verify it matches its claimed extension.
+  // A plain text file claiming to be an image is a data disguise attempt.
+  const expectedMagic = BINARY_EXT_MAGIC[ext];
+  if (expectedMagic && !matchesMagic(headerBytes, expectedMagic) && isPlainText(headerBytes)) {
+    return { blocked: true, reason: `File type mismatch — claims to be ${ext.toUpperCase()} but contains plain text` };
+  }
+
+  return result;
 }
 
 window.BetterDLP = window.BetterDLP || {};

@@ -120,6 +120,27 @@ async function detectType(bytes, buf = null, depth = 0) {
 
 const NO_MAGIC_EXT = new Set(['csv', 'tsv', 'txt']);
 
+const BINARY_EXT_MAGIC = {
+  jpg:  [0xFF, 0xD8, 0xFF],
+  jpeg: [0xFF, 0xD8, 0xFF],
+  png:  [0x89, 0x50, 0x4E, 0x47],
+  gif:  [0x47, 0x49, 0x46, 0x38],
+  bmp:  [0x42, 0x4D],
+  ico:  [0x00, 0x00, 0x01, 0x00],
+  mp4:  [0x00, 0x00, 0x00],
+  webp: [0x52, 0x49, 0x46, 0x46],
+};
+
+function isPlainText(bytes) {
+  const sample = bytes.slice(0, 512);
+  for (const b of sample) {
+    if (b === 0x09 || b === 0x0A || b === 0x0D) continue;
+    if (b >= 0x20 && b <= 0x7E) continue;
+    if (b === 0x00 || b < 0x09) return false;
+  }
+  return true;
+}
+
 async function inspectFile(blob) {
   const ext = (blob.name || '').split('.').pop().toLowerCase();
   if (NO_MAGIC_EXT.has(ext)) {
@@ -127,7 +148,13 @@ async function inspectFile(blob) {
   }
   const buf = await blob.arrayBuffer();
   const bytes = new Uint8Array(buf);
-  return await detectType(bytes, buf, 0);
+  const result = await detectType(bytes, buf, 0);
+  if (result.blocked) return result;
+  const expectedMagic = BINARY_EXT_MAGIC[ext];
+  if (expectedMagic && !match(bytes, expectedMagic) && isPlainText(bytes)) {
+    return { blocked: true, reason: `File type mismatch — claims to be ${ext.toUpperCase()} but contains plain text` };
+  }
+  return result;
 }
 
 // ─── File helper ──────────────────────────────────────────────────────────────
@@ -160,6 +187,7 @@ const TESTS = [
   { name: 'Nested ZIP (3 levels)',       file: 'triple_nested.zip',    expect: 'BLOCKED' },
   // No-magic-bytes formats (extension-based detection)
   { name: 'CSV file',                   file: 'data.csv',             expect: 'BLOCKED' },
+  { name: 'CSV renamed to .jpg',        file: 'csv_as_image.jpg',     expect: 'BLOCKED' },
   // Should pass
   { name: 'Clean ZIP (images only)',    file: 'clean_photos.zip',     expect: 'BLOCKED' },
   { name: 'Real PNG Image',             file: 'real_image.png',       expect: 'ALLOWED' },

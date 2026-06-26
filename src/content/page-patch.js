@@ -101,13 +101,43 @@
 
   var NO_MAGIC_EXT = { csv: 1, tsv: 1, txt: 1 };
 
+  var BINARY_EXT_MAGIC = {
+    jpg:  [0xFF, 0xD8, 0xFF],
+    jpeg: [0xFF, 0xD8, 0xFF],
+    png:  [0x89, 0x50, 0x4E, 0x47],
+    gif:  [0x47, 0x49, 0x46, 0x38],
+    bmp:  [0x42, 0x4D],
+    ico:  [0x00, 0x00, 0x01, 0x00],
+    mp4:  [0x00, 0x00, 0x00],
+    webp: [0x52, 0x49, 0x46, 0x46],
+  };
+
+  function isPlainText(bytes) {
+    var sample = bytes.slice(0, 512);
+    for (var i = 0; i < sample.length; i++) {
+      var b = sample[i];
+      if (b === 0x09 || b === 0x0A || b === 0x0D) continue;
+      if (b >= 0x20 && b <= 0x7E) continue;
+      if (b === 0x00 || b < 0x09) return false;
+    }
+    return true;
+  }
+
   function inspectFile(file) {
     var ext = (file.name || '').split('.').pop().toLowerCase();
     if (NO_MAGIC_EXT[ext]) {
       return Promise.resolve({ blocked: true, reason: ext.toUpperCase() + ' file — no magic bytes, blocked by extension' });
     }
     return file.arrayBuffer().then(function (buf) {
-      return detectType(new Uint8Array(buf), buf, 0);
+      var bytes = new Uint8Array(buf);
+      return detectType(bytes, buf, 0).then(function (result) {
+        if (result.blocked) return result;
+        var expectedMagic = BINARY_EXT_MAGIC[ext];
+        if (expectedMagic && !match(bytes, expectedMagic) && isPlainText(bytes)) {
+          return { blocked: true, reason: 'File type mismatch — claims to be ' + ext.toUpperCase() + ' but contains plain text' };
+        }
+        return result;
+      });
     });
   }
 
