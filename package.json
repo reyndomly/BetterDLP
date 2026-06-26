@@ -1,0 +1,17 @@
+{
+  "name": "betterdlp",
+  "version": "0.1.0",
+  "description": "Chrome extension for Data Loss Prevention — blocks document uploads based on real file content.",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/run-tests.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/reyndomly/BetterDLP.git"
+  },
+  "license": "MIT"
+}
