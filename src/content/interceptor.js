@@ -124,7 +124,14 @@
 
   // ─── Vector 2: Drag & Drop ───────────────────────────────────────────────────
 
-  document.addEventListener('dragover', (e) => e.preventDefault(), true);
+  // Only preventDefault on dragover when the drag contains files — avoids
+  // breaking apps (WhatsApp, Telegram) that manage their own drag state.
+  document.addEventListener('dragover', (e) => {
+    if (e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.includes('Files')) {
+      e.preventDefault();
+    }
+  }, true);
+
   document.addEventListener('drop', async (e) => {
     if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
     const blocked = await handleFiles(e.dataTransfer.files, 'drag & drop');
@@ -165,35 +172,52 @@
     return [];
   }
 
-  // Patch fetch
+  // Patch fetch — fast path skips inspection when body has no files
   const _originalFetch = window.fetch;
-  window.fetch = async function (input, init = {}) {
-    const files = await extractFilesFromBody(init.body);
-    if (files.length > 0) {
-      const blocked = await handleFiles(files, 'fetch API');
-      if (blocked) {
-        return new Response(JSON.stringify({ error: 'Blocked by BetterDLP' }), {
-          status: 403,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
+  window.fetch = function (input, init) {
+    const body = init && init.body;
+    if (!(body instanceof FormData) && !(body instanceof File) && !(body instanceof Blob)) {
+      return _originalFetch.apply(this, arguments);
     }
-    return _originalFetch.apply(this, arguments);
+    const self = this;
+    const args = arguments;
+    return extractFilesFromBody(body).then(function (files) {
+      if (files.length === 0) return _originalFetch.apply(self, args);
+      return handleFiles(files, 'fetch API').then(function (blocked) {
+        if (blocked) {
+          return new Response(JSON.stringify({ error: 'Blocked by BetterDLP' }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return _originalFetch.apply(self, args);
+      });
+    }).catch(function () {
+      return _originalFetch.apply(self, args);
+    });
   };
 
-  // Patch XMLHttpRequest
+  // Patch XMLHttpRequest — must stay synchronous to not break apps like
+  // WhatsApp and Telegram that depend on XHR.send() returning undefined.
   const _originalXHRSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.send = async function (body) {
-    const files = await extractFilesFromBody(body);
-    if (files.length > 0) {
-      const blocked = await handleFiles(files, 'XHR');
-      if (blocked) {
-        // Abort the request silently — modal already shown
-        this.abort();
+  XMLHttpRequest.prototype.send = function (body) {
+    if (!(body instanceof FormData) && !(body instanceof File) && !(body instanceof Blob)) {
+      return _originalXHRSend.apply(this, arguments);
+    }
+    const self = this;
+    const args = arguments;
+    extractFilesFromBody(body).then(function (files) {
+      if (files.length === 0) {
+        _originalXHRSend.apply(self, args);
         return;
       }
-    }
-    _originalXHRSend.apply(this, arguments);
+      handleFiles(files, 'XHR').then(function (blocked) {
+        if (!blocked) _originalXHRSend.apply(self, args);
+        // if blocked, modal is already shown — request simply never sends
+      });
+    }).catch(function () {
+      _originalXHRSend.apply(self, args);
+    });
   };
 
 })();
