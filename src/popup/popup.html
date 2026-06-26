@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BetterDLP</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      width: 360px; background: #F9FAFB; color: #111;
+    }
+
+    /* Header */
+    .header {
+      background: #111827; color: #fff;
+      padding: 16px 20px; display: flex; align-items: center;
+      justify-content: space-between;
+    }
+    .header-left { display: flex; align-items: center; gap: 10px; }
+    .logo { font-size: 20px; }
+    .brand { font-size: 16px; font-weight: 700; }
+    .tagline { font-size: 11px; color: #9CA3AF; }
+    .toggle-wrap { display: flex; align-items: center; gap: 8px; }
+    .toggle-label { font-size: 12px; color: #D1D5DB; }
+    .toggle {
+      position: relative; width: 40px; height: 22px;
+      background: #374151; border-radius: 11px; cursor: pointer;
+      transition: background 0.2s;
+    }
+    .toggle.on { background: #10B981; }
+    .toggle::after {
+      content: ''; position: absolute; top: 3px; left: 3px;
+      width: 16px; height: 16px; background: #fff; border-radius: 50%;
+      transition: left 0.2s;
+    }
+    .toggle.on::after { left: 21px; }
+
+    /* Tabs */
+    .tabs {
+      display: flex; background: #fff; border-bottom: 1px solid #E5E7EB;
+    }
+    .tab {
+      flex: 1; padding: 10px; font-size: 12px; font-weight: 600;
+      color: #6B7280; cursor: pointer; text-align: center;
+      border-bottom: 2px solid transparent; transition: all 0.15s;
+    }
+    .tab.active { color: #111; border-bottom-color: #EF4444; }
+
+    /* Panels */
+    .panel { display: none; padding: 16px; }
+    .panel.active { display: block; }
+
+    /* Stats */
+    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+    .stat-card {
+      background: #fff; border: 1px solid #E5E7EB; border-radius: 8px;
+      padding: 12px; text-align: center;
+    }
+    .stat-value { font-size: 24px; font-weight: 700; color: #EF4444; }
+    .stat-value.green { color: #10B981; }
+    .stat-label { font-size: 11px; color: #6B7280; margin-top: 2px; }
+
+    /* Log */
+    .log-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px;
+    }
+    .log-title { font-size: 13px; font-weight: 600; }
+    .btn-clear {
+      font-size: 11px; color: #EF4444; cursor: pointer; background: none;
+      border: none; font-weight: 600; padding: 0;
+    }
+    .log-list { max-height: 220px; overflow-y: auto; }
+    .log-entry {
+      background: #fff; border: 1px solid #E5E7EB; border-radius: 6px;
+      padding: 10px 12px; margin-bottom: 6px; font-size: 12px;
+    }
+    .log-entry.blocked { border-left: 3px solid #EF4444; }
+    .log-entry.allowed { border-left: 3px solid #10B981; }
+    .log-entry.false-positive { border-left: 3px solid #F59E0B; }
+    .log-top { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .log-filename { font-weight: 600; color: #111; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .log-action { font-weight: 700; font-size: 10px; padding: 2px 6px; border-radius: 4px; }
+    .log-action.BLOCKED { background: #FEE2E2; color: #991B1B; }
+    .log-action.ALLOWED { background: #D1FAE5; color: #065F46; }
+    .log-action.FALSE_POSITIVE_REPORTED { background: #FEF3C7; color: #92400E; }
+    .log-reason { color: #6B7280; margin-bottom: 3px; }
+    .log-meta { color: #9CA3AF; font-size: 11px; }
+    .empty-state { text-align: center; padding: 30px; color: #9CA3AF; font-size: 13px; }
+
+    /* Settings */
+    .setting-group { margin-bottom: 16px; }
+    .setting-label { font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 6px; }
+    select, input[type="text"] {
+      width: 100%; padding: 8px 10px; border: 1px solid #D1D5DB;
+      border-radius: 6px; font-size: 13px; background: #fff;
+      outline: none;
+    }
+    select:focus, input[type="text"]:focus { border-color: #6366F1; }
+    .domain-list { margin-top: 8px; }
+    .domain-item {
+      display: flex; justify-content: space-between; align-items: center;
+      background: #fff; border: 1px solid #E5E7EB; border-radius: 6px;
+      padding: 7px 10px; margin-bottom: 5px; font-size: 12px;
+    }
+    .domain-remove { color: #EF4444; cursor: pointer; font-weight: 700; font-size: 14px; }
+    .domain-add { display: flex; gap: 6px; margin-top: 6px; }
+    .domain-add input { flex: 1; }
+    .btn-add {
+      padding: 8px 12px; background: #111827; color: #fff;
+      border: none; border-radius: 6px; font-size: 12px;
+      font-weight: 600; cursor: pointer;
+    }
+    .btn-export {
+      width: 100%; padding: 9px; background: #F3F4F6;
+      border: 1px solid #D1D5DB; border-radius: 6px;
+      font-size: 12px; font-weight: 600; cursor: pointer; margin-top: 8px;
+    }
+    .btn-export:hover { background: #E5E7EB; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <span class="logo">🛡️</span>
+      <div>
+        <div class="brand">BetterDLP</div>
+        <div class="tagline">Data Loss Prevention</div>
+      </div>
+    </div>
+    <div class="toggle-wrap">
+      <span class="toggle-label" id="toggle-text">ON</span>
+      <div class="toggle on" id="main-toggle"></div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="dashboard">Dashboard</div>
+    <div class="tab" data-tab="logs">Logs</div>
+    <div class="tab" data-tab="settings">Settings</div>
+  </div>
+
+  <!-- Dashboard -->
+  <div class="panel active" id="tab-dashboard">
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-value" id="stat-blocked">0</div>
+        <div class="stat-label">Blocked Today</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value green" id="stat-allowed">0</div>
+        <div class="stat-label">Allowed Today</div>
+      </div>
+    </div>
+    <div class="log-title" style="font-size:13px;font-weight:600;margin-bottom:8px;">Recent Activity</div>
+    <div class="log-list" id="dashboard-recent"></div>
+  </div>
+
+  <!-- Logs -->
+  <div class="panel" id="tab-logs">
+    <div class="log-header">
+      <span class="log-title">Audit Log</span>
+      <button class="btn-clear" id="btn-clear-logs">Clear All</button>
+    </div>
+    <div class="log-list" id="full-log-list"></div>
+    <button class="btn-export" id="btn-export">Export as JSON</button>
+  </div>
+
+  <!-- Settings -->
+  <div class="panel" id="tab-settings">
+    <div class="setting-group">
+      <div class="setting-label">Protection Mode</div>
+      <select id="mode-select">
+        <option value="block_everywhere">Block Everywhere</option>
+        <option value="blocklist">Block on Specific Domains</option>
+        <option value="allowlist">Allow on Specific Domains (block elsewhere)</option>
+      </select>
+    </div>
+    <div class="setting-group" id="domain-section">
+      <div class="setting-label" id="domain-label">Domains</div>
+      <div class="domain-list" id="domain-list"></div>
+      <div class="domain-add">
+        <input type="text" id="domain-input" placeholder="e.g. mail.google.com" />
+        <button class="btn-add" id="btn-add-domain">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
