@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BetterDLP",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Data Loss Prevention extension — blocks document uploads to prevent sensitive file exfiltration.",
   "permissions": [
     "storage",
@@ -18,9 +18,19 @@
       "matches": ["<all_urls>"],
       "js": [
         "src/lib/jszip.min.js",
+        "src/content/page-patch.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": [
         "src/content/detector.js",
         "src/content/ui.js",
-        "src/content/interceptor.js"
+        "src/content/interceptor.js",
+        "src/content/bridge.js"
       ],
       "run_at": "document_start",
       "all_frames": true
