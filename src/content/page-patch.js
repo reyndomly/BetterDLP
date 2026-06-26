@@ -70,7 +70,7 @@
 
       return Promise.all(checks).then(function (results) {
         var hit = results.find(function (r) { return r.blocked; });
-        return hit || { blocked: false, reason: 'ZIP contents are clean' };
+        return hit || { blocked: true, reason: 'ZIP archive — all archives blocked by policy' };
       });
 
     }).catch(function (err) {

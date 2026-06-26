@@ -60,44 +60,33 @@
   }
 
   // ─── input[type=file] — document-level capture listener ──────────────────────
-
-  var DOC_EXTENSIONS = new Set([
-    'doc','docx','xls','xlsx','ppt','pptx','pdf','rtf','odt','ods','odp','csv'
-  ]);
-  var DOC_MIMES = new Set([
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.ms-excel',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'application/vnd.ms-powerpoint',
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    'text/rtf','application/rtf',
-    'application/zip','application/x-rar-compressed','application/x-7z-compressed',
-  ]);
-
-  function isObviouslyADocument(file) {
-    var ext = (file.name || '').split('.').pop().toLowerCase();
-    return DOC_EXTENSIONS.has(ext) || DOC_MIMES.has(file.type);
-  }
+  // Stop ALL file input events synchronously — prevents the app from ever seeing
+  // the file and showing a preview, regardless of extension or disguise.
+  // After async inspection:
+  //   blocked → show modal, clear input
+  //   allowed → re-dispatch a synthetic change event so the app processes normally
+  // isTrusted check avoids infinite loop on the re-dispatched event.
 
   document.addEventListener('change', function (e) {
     var target = e.target;
     if (!target || target.type !== 'file' || !target.files || target.files.length === 0) return;
 
+    // Ignore our own re-dispatched synthetic events
+    if (!e.isTrusted) return;
+
     var files = Array.from(target.files);
 
-    // Tier 1 — synchronous: if ANY file looks like a document by extension/MIME,
-    // stop the event immediately so the app never sees the file and shows no preview.
-    if (files.some(isObviouslyADocument)) {
-      e.stopImmediatePropagation();
-      e.preventDefault();
-    }
+    // Stop propagation synchronously — app never sees this event, no preview shown
+    e.stopImmediatePropagation();
+    e.preventDefault();
 
-    // Tier 2 — async: full magic bytes + ZIP inspection regardless.
-    // Catches renamed files (e.g. docx → .jpg) that passed Tier 1.
     handleFiles(files, 'file input').then(function (blocked) {
-      if (blocked) target.value = '';
+      if (blocked) {
+        target.value = '';
+      } else {
+        // File is clean — re-dispatch so the app handles it normally
+        target.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+      }
     });
   }, true);
 

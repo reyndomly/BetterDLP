@@ -97,7 +97,7 @@ async function inspectZip(buf, depth = 0) {
     if (r.blocked) return { blocked: true, reason: `${r.reason} (inside: ${name})` };
   }
 
-  return { blocked: false, reason: 'ZIP contents are clean' };
+  return { blocked: true, reason: 'ZIP archive — all archives blocked by policy' };
 }
 
 async function detectType(bytes, buf = null, depth = 0) {
@@ -134,16 +134,26 @@ function makeBlob(filename) {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 const TESTS = [
-  { name: 'Real DOCX',             file: 'real.docx',            expect: 'BLOCKED' },
-  { name: 'DOCX renamed to .jpg',  file: 'photo_disguised.jpg',  expect: 'BLOCKED' },
-  { name: 'Clean ZIP (images)',    file: 'clean_photos.zip',     expect: 'ALLOWED' },
-  { name: 'ZIP with DOCX inside',  file: 'archive_with_doc.zip', expect: 'BLOCKED' },
-  { name: 'Encrypted ZIP',         file: 'encrypted.zip',        expect: 'BLOCKED' },
-  { name: 'PDF',                   file: 'document.pdf',         expect: 'BLOCKED' },
-  { name: 'Legacy DOC (OLE2)',     file: 'legacy.doc',           expect: 'BLOCKED' },
-  { name: 'RAR Archive',           file: 'archive.rar',          expect: 'BLOCKED' },
-  { name: 'Real PNG Image',        file: 'real_image.png',       expect: 'ALLOWED' },
-  { name: 'Nested ZIP (doc)',      file: 'nested.zip',           expect: 'BLOCKED' },
+  // Core document formats
+  { name: 'Real DOCX',                  file: 'real.docx',            expect: 'BLOCKED' },
+  { name: 'Real XLSX',                  file: 'real.xlsx',            expect: 'BLOCKED' },
+  { name: 'Real PPTX',                  file: 'real.pptx',            expect: 'BLOCKED' },
+  { name: 'Legacy DOC (OLE2)',          file: 'legacy.doc',           expect: 'BLOCKED' },
+  { name: 'PDF',                        file: 'document.pdf',         expect: 'BLOCKED' },
+  { name: 'RTF',                        file: 'real.rtf',             expect: 'BLOCKED' },
+  // Bypass attempts
+  { name: 'DOCX renamed to .jpg',       file: 'photo_disguised.jpg',  expect: 'BLOCKED' },
+  { name: 'ZIP with DOCX inside',       file: 'archive_with_doc.zip', expect: 'BLOCKED' },
+  { name: 'Encrypted ZIP',              file: 'encrypted.zip',        expect: 'BLOCKED' },
+  { name: 'RAR Archive',                file: 'archive.rar',          expect: 'BLOCKED' },
+  { name: '7-Zip Archive',              file: 'archive.7z',           expect: 'BLOCKED' },
+  { name: 'GZIP Archive',               file: 'archive.gz',           expect: 'BLOCKED' },
+  { name: 'Zip Bomb (200MB declared)',   file: 'zipbomb.zip',          expect: 'BLOCKED' },
+  { name: 'Nested ZIP (2 levels)',       file: 'nested.zip',           expect: 'BLOCKED' },
+  { name: 'Nested ZIP (3 levels)',       file: 'triple_nested.zip',    expect: 'BLOCKED' },
+  // Should pass
+  { name: 'Clean ZIP (images only)',    file: 'clean_photos.zip',     expect: 'BLOCKED' },
+  { name: 'Real PNG Image',             file: 'real_image.png',       expect: 'ALLOWED' },
 ];
 
 const G = '\x1b[32m', R = '\x1b[31m', Y = '\x1b[33m', D = '\x1b[2m', B = '\x1b[1m', X = '\x1b[0m';

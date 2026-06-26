@@ -119,7 +119,7 @@ async function inspectZip(arrayBuffer, depth = 0) {
     }
   }
 
-  return { blocked: false };
+  return { blocked: true, reason: 'ZIP archive — all archives blocked by policy' };
 }
 
 async function detectFileType(bytes, arrayBuffer = null, depth = 0) {
@@ -162,7 +162,7 @@ async function detectFileType(bytes, arrayBuffer = null, depth = 0) {
     return await inspectZip(arrayBuffer, depth);
   }
 
-  return { blocked: false };
+  return { blocked: false, reason: 'File type allowed' };
 }
 
 async function inspectFile(file) {
