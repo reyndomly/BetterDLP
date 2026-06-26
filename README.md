@@ -55,6 +55,8 @@ When a managed policy is active, the Settings tab displays a **"Managed by your 
 }
 ```
 
+For full deployment instructions (GPO, PowerShell, registry), see [docs/gpo-deployment.md](docs/gpo-deployment.md).
+
 ---
 
 ## Install
