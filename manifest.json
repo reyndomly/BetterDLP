@@ -7,6 +7,9 @@
     "storage",
     "notifications"
   ],
+  "storage": {
+    "managed_schema": "src/managed_schema.json"
+  },
   "host_permissions": [
     "<all_urls>"
   ],

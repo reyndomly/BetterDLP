@@ -8,7 +8,22 @@
 
   function getConfig() {
     return new Promise(function (resolve) {
-      chrome.storage.sync.get({ enabled: true, mode: 'block_everywhere', domains: [] }, resolve);
+      chrome.storage.managed.get(null, function (managed) {
+        var hasManagedPolicy = !chrome.runtime.lastError && managed && Object.keys(managed).length > 0;
+        if (hasManagedPolicy) {
+          resolve({
+            enabled:      managed.enabled      !== undefined ? managed.enabled      : true,
+            mode:         managed.mode         || 'block_everywhere',
+            domains:      managed.domains      || [],
+            lockSettings: managed.lockSettings !== undefined ? managed.lockSettings : true,
+            isManaged:    true,
+          });
+        } else {
+          chrome.storage.sync.get({ enabled: true, mode: 'block_everywhere', domains: [] }, function (sync) {
+            resolve(Object.assign({ isManaged: false, lockSettings: false }, sync));
+          });
+        }
+      });
     });
   }
 

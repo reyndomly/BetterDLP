@@ -18,11 +18,21 @@ document.querySelectorAll('.tab').forEach(tab => {
 const toggle = document.getElementById('main-toggle');
 const toggleText = document.getElementById('toggle-text');
 
-chrome.storage.sync.get({ enabled: true }, ({ enabled }) => {
-  setToggle(enabled);
+chrome.storage.managed.get(null, function (managed) {
+  const hasManagedPolicy = !chrome.runtime.lastError && managed && Object.keys(managed).length > 0;
+  if (hasManagedPolicy && managed.enabled !== undefined) {
+    setToggle(managed.enabled);
+    if (managed.lockSettings !== false) {
+      toggle.style.pointerEvents = 'none';
+      toggle.style.opacity = '0.6';
+    }
+  } else {
+    chrome.storage.sync.get({ enabled: true }, ({ enabled }) => setToggle(enabled));
+  }
 });
 
 toggle.addEventListener('click', () => {
+  if (settingsLocked) return;
   const isOn = toggle.classList.contains('on');
   chrome.storage.sync.set({ enabled: !isOn });
   setToggle(!isOn);
@@ -123,7 +133,22 @@ const domainLabel = document.getElementById('domain-label');
 const domainList = document.getElementById('domain-list');
 const domainInput = document.getElementById('domain-input');
 
-function renderDomains(domains) {
+let settingsLocked = false;
+
+function applyManagedLock(locked) {
+  settingsLocked = locked;
+  document.getElementById('managed-banner').style.display = locked ? 'flex' : 'none';
+  document.getElementById('mode-locked-badge').style.display = locked ? 'inline-block' : 'none';
+  document.getElementById('domains-locked-badge').style.display = locked ? 'inline-block' : 'none';
+  document.getElementById('mode-group').classList.toggle('setting-locked', locked);
+  document.getElementById('domain-add-row').style.display = locked ? 'none' : 'flex';
+  // Remove delete buttons on existing domain items when locked
+  document.querySelectorAll('.domain-remove').forEach(el => {
+    el.style.display = locked ? 'none' : '';
+  });
+}
+
+function renderDomains(domains, locked) {
   domainList.innerHTML = '';
   if (domains.length === 0) {
     domainList.innerHTML = '<div style="font-size:12px;color:#9CA3AF;padding:4px 0;">No domains added</div>';
@@ -132,14 +157,16 @@ function renderDomains(domains) {
   domains.forEach(domain => {
     const item = document.createElement('div');
     item.className = 'domain-item';
-    item.innerHTML = `<span>${domain}</span><span class="domain-remove" data-domain="${domain}">×</span>`;
-    item.querySelector('.domain-remove').addEventListener('click', () => {
-      chrome.storage.sync.get({ domains: [] }, ({ domains: d }) => {
-        const updated = d.filter(x => x !== domain);
-        chrome.storage.sync.set({ domains: updated });
-        renderDomains(updated);
+    item.innerHTML = `<span>${domain}</span><span class="domain-remove" data-domain="${domain}" style="display:${locked ? 'none' : ''}">×</span>`;
+    if (!locked) {
+      item.querySelector('.domain-remove').addEventListener('click', () => {
+        chrome.storage.sync.get({ domains: [] }, ({ domains: d }) => {
+          const updated = d.filter(x => x !== domain);
+          chrome.storage.sync.set({ domains: updated });
+          renderDomains(updated, false);
+        });
       });
-    });
+    }
     domainList.appendChild(item);
   });
 }
@@ -150,31 +177,54 @@ function updateDomainLabel(mode) {
     blocklist: 'Block on these domains',
     allowlist: 'Allow on these domains (block everywhere else)',
   };
+  // Preserve the MANAGED badge by only updating the text node
+  const badge = document.getElementById('domains-locked-badge');
   domainLabel.textContent = labels[mode] || 'Domains';
+  domainLabel.appendChild(badge);
   domainSection.style.opacity = mode === 'block_everywhere' ? '0.4' : '1';
-  domainSection.style.pointerEvents = mode === 'block_everywhere' ? 'none' : 'auto';
+  domainSection.style.pointerEvents = (!settingsLocked && mode === 'block_everywhere') ? 'none' : '';
 }
 
-chrome.storage.sync.get({ mode: 'block_everywhere', domains: [] }, ({ mode, domains }) => {
-  modeSelect.value = mode;
-  updateDomainLabel(mode);
-  renderDomains(domains);
-});
+function loadSettings() {
+  chrome.storage.managed.get(null, function (managed) {
+    const hasManagedPolicy = !chrome.runtime.lastError && managed && Object.keys(managed).length > 0;
+    if (hasManagedPolicy) {
+      const locked = managed.lockSettings !== false;
+      const mode = managed.mode || 'block_everywhere';
+      const domains = managed.domains || [];
+      modeSelect.value = mode;
+      updateDomainLabel(mode);
+      renderDomains(domains, locked);
+      applyManagedLock(locked);
+    } else {
+      chrome.storage.sync.get({ mode: 'block_everywhere', domains: [] }, ({ mode, domains }) => {
+        modeSelect.value = mode;
+        updateDomainLabel(mode);
+        renderDomains(domains, false);
+        applyManagedLock(false);
+      });
+    }
+  });
+}
+
+loadSettings();
 
 modeSelect.addEventListener('change', () => {
+  if (settingsLocked) return;
   const mode = modeSelect.value;
   chrome.storage.sync.set({ mode });
   updateDomainLabel(mode);
 });
 
 document.getElementById('btn-add-domain').addEventListener('click', () => {
+  if (settingsLocked) return;
   const val = domainInput.value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   if (!val) return;
   chrome.storage.sync.get({ domains: [] }, ({ domains }) => {
     if (domains.includes(val)) return;
     const updated = [...domains, val];
     chrome.storage.sync.set({ domains: updated });
-    renderDomains(updated);
+    renderDomains(updated, false);
     domainInput.value = '';
   });
 });

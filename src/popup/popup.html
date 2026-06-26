@@ -118,6 +118,21 @@
       font-size: 12px; font-weight: 600; cursor: pointer; margin-top: 8px;
     }
     .btn-export:hover { background: #E5E7EB; }
+
+    /* Managed policy lock */
+    .managed-banner {
+      display: flex; align-items: center; gap: 8px;
+      background: #EFF6FF; border: 1px solid #BFDBFE;
+      border-radius: 6px; padding: 9px 12px;
+      font-size: 12px; color: #1D4ED8; margin-bottom: 14px;
+    }
+    .managed-banner .lock-icon { font-size: 14px; flex-shrink: 0; }
+    .setting-locked { opacity: 0.5; pointer-events: none; }
+    .locked-badge {
+      display: inline-block; font-size: 10px; font-weight: 600;
+      background: #DBEAFE; color: #1E40AF; border-radius: 4px;
+      padding: 1px 6px; margin-left: 6px; vertical-align: middle;
+    }
   </style>
 </head>
 <body>
@@ -169,8 +184,12 @@
 
   <!-- Settings -->
   <div class="panel" id="tab-settings">
-    <div class="setting-group">
-      <div class="setting-label">Protection Mode</div>
+    <div id="managed-banner" class="managed-banner" style="display:none;">
+      <span class="lock-icon">🔒</span>
+      <span>Settings are managed by your organization and cannot be changed.</span>
+    </div>
+    <div class="setting-group" id="mode-group">
+      <div class="setting-label">Protection Mode <span class="locked-badge" id="mode-locked-badge" style="display:none;">MANAGED</span></div>
       <select id="mode-select">
         <option value="block_everywhere">Block Everywhere</option>
         <option value="blocklist">Block on Specific Domains</option>
@@ -178,9 +197,9 @@
       </select>
     </div>
     <div class="setting-group" id="domain-section">
-      <div class="setting-label" id="domain-label">Domains</div>
+      <div class="setting-label" id="domain-label">Domains <span class="locked-badge" id="domains-locked-badge" style="display:none;">MANAGED</span></div>
       <div class="domain-list" id="domain-list"></div>
-      <div class="domain-add">
+      <div class="domain-add" id="domain-add-row">
         <input type="text" id="domain-input" placeholder="e.g. mail.google.com" />
         <button class="btn-add" id="btn-add-domain">Add</button>
       </div>

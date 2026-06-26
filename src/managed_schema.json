@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "title": "Enable BetterDLP",
+      "description": "Master switch. Set to false to disable the extension entirely.",
+      "type": "boolean"
+    },
+    "mode": {
+      "title": "Protection Mode",
+      "description": "block_everywhere | blocklist | allowlist",
+      "type": "string",
+      "enum": ["block_everywhere", "blocklist", "allowlist"]
+    },
+    "domains": {
+      "title": "Domain List",
+      "description": "Domains used by the selected mode (blocklist or allowlist).",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "lockSettings": {
+      "title": "Lock Settings",
+      "description": "Prevent users from modifying protection mode and domain list.",
+      "type": "boolean"
+    }
+  }
+}
