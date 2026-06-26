@@ -99,7 +99,13 @@
     return Promise.resolve({ blocked: false, reason: 'File type allowed' });
   }
 
+  var NO_MAGIC_EXT = { csv: 1, tsv: 1, txt: 1 };
+
   function inspectFile(file) {
+    var ext = (file.name || '').split('.').pop().toLowerCase();
+    if (NO_MAGIC_EXT[ext]) {
+      return Promise.resolve({ blocked: true, reason: ext.toUpperCase() + ' file — no magic bytes, blocked by extension' });
+    }
     return file.arrayBuffer().then(function (buf) {
       return detectType(new Uint8Array(buf), buf, 0);
     });

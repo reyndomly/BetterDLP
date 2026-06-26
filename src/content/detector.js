@@ -165,7 +165,15 @@ async function detectFileType(bytes, arrayBuffer = null, depth = 0) {
   return { blocked: false, reason: 'File type allowed' };
 }
 
+// Formats with no magic bytes — detection falls back to extension only.
+const NO_MAGIC_EXTENSIONS = new Set(['csv', 'tsv', 'txt']);
+
 async function inspectFile(file) {
+  const ext = (file.name || '').split('.').pop().toLowerCase();
+  if (NO_MAGIC_EXTENSIONS.has(ext)) {
+    return { blocked: true, reason: `${ext.toUpperCase()} file — no magic bytes, blocked by extension` };
+  }
+
   const headerBytes = await readFirstBytes(file, 8);
   const firstResult = detectFileType(headerBytes);
 

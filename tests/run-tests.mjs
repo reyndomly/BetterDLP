@@ -118,7 +118,13 @@ async function detectType(bytes, buf = null, depth = 0) {
   return { blocked: false, reason: 'File type allowed' };
 }
 
+const NO_MAGIC_EXT = new Set(['csv', 'tsv', 'txt']);
+
 async function inspectFile(blob) {
+  const ext = (blob.name || '').split('.').pop().toLowerCase();
+  if (NO_MAGIC_EXT.has(ext)) {
+    return { blocked: true, reason: `${ext.toUpperCase()} file — no magic bytes, blocked by extension` };
+  }
   const buf = await blob.arrayBuffer();
   const bytes = new Uint8Array(buf);
   return await detectType(bytes, buf, 0);
@@ -128,6 +134,7 @@ async function inspectFile(blob) {
 function makeBlob(filename) {
   const raw = readFileSync(new URL(`fixtures/${filename}`, import.meta.url).pathname);
   return {
+    name: filename,
     arrayBuffer: () => Promise.resolve(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)),
   };
 }
@@ -151,6 +158,8 @@ const TESTS = [
   { name: 'Zip Bomb (200MB declared)',   file: 'zipbomb.zip',          expect: 'BLOCKED' },
   { name: 'Nested ZIP (2 levels)',       file: 'nested.zip',           expect: 'BLOCKED' },
   { name: 'Nested ZIP (3 levels)',       file: 'triple_nested.zip',    expect: 'BLOCKED' },
+  // No-magic-bytes formats (extension-based detection)
+  { name: 'CSV file',                   file: 'data.csv',             expect: 'BLOCKED' },
   // Should pass
   { name: 'Clean ZIP (images only)',    file: 'clean_photos.zip',     expect: 'BLOCKED' },
   { name: 'Real PNG Image',             file: 'real_image.png',       expect: 'ALLOWED' },
