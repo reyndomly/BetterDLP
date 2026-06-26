@@ -1,35 +1,59 @@
 # BetterDLP
 
-Chrome extension that blocks document uploads based on actual file content, not the filename.
-
-Tired of DLP tools that get bypassed by just renaming `report.docx` to `photo.jpg`. This checks magic bytes instead.
+Chrome extension that enforces Data Loss Prevention by blocking document uploads based on actual file content — not filename or extension.
 
 ---
 
 ## How it works
 
-Intercepts file uploads before they hit the network and reads the first few bytes of the file to identify the real format. A DOCX is a ZIP under the hood — so it also unpacks ZIPs and checks what's inside.
+BetterDLP intercepts uploads before they reach the network and inspects the real file type using magic bytes. A DOCX renamed to `.jpg` is still a ZIP containing `word/document.xml` — BetterDLP catches it either way.
 
-Blocked formats: DOCX, XLSX, PPTX, DOC, XLS, PPT, PDF, RTF, RAR, 7z, GZIP, and any ZIP that contains one of the above.
+**Blocked formats:** DOCX, XLSX, PPTX, DOC, XLS, PPT, PDF, RTF, CSV, RAR, 7z, GZIP, and any ZIP containing a document.
 
-Upload vectors covered:
-- `<input type="file">` (including dynamically injected ones)
+**Upload vectors covered:**
+- `<input type="file">` — file picker, including dynamically injected inputs
 - Drag and drop
 - Clipboard paste
-- `fetch()` and `XMLHttpRequest` (patched before page scripts load)
+- `fetch()` and `XMLHttpRequest` — patched at page load before any page script runs
 
 ---
 
-## Why not just check the extension?
+## Detection
 
-Because it's trivially bypassed. Rename the file, done. Magic bytes can't be faked without a hex editor — and even then, a renamed DOCX is still a ZIP with `word/document.xml` inside, which this catches too.
+| Technique | What it catches |
+|-----------|----------------|
+| Magic bytes | Real file type regardless of extension |
+| ZIP inspection | Office documents (DOCX/XLSX/PPTX) disguised as other files |
+| Recursive ZIP | Documents buried inside nested archives (up to 3 levels) |
+| Encrypted ZIP | Blocked — contents cannot be verified |
+| Zip bomb | Blocked — uncompressed size > 100MB |
+| Extension fallback | CSV, TSV, TXT (no binary signature) |
 
-Edge cases handled:
-- ZIP containing a document → blocked
-- Password-protected ZIP → blocked (can't verify contents)
-- Nested ZIP (ZIP inside ZIP) → recursive inspection up to 3 levels
-- RAR / 7z → blocked by default (no reliable JS parser)
-- Zip bombs → blocked if uncompressed size > 100MB
+---
+
+## Enterprise Policy
+
+Administrators can lock settings via **Chrome Managed Policy** (Group Policy / MDM) so users cannot modify the protection mode or domain list.
+
+Policy keys (`managed_schema.json`):
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `enabled` | boolean | Master on/off switch |
+| `mode` | string | `block_everywhere` / `blocklist` / `allowlist` |
+| `domains` | array | Domain list for the selected mode |
+| `lockSettings` | boolean | Prevent users from editing settings |
+
+When a managed policy is active, the Settings tab displays a **"Managed by your organization"** banner and all controls are read-only.
+
+**Example — allow internal mail, block everywhere else:**
+```json
+{
+  "mode": "allowlist",
+  "domains": ["outlook.office.com", "outlook.office365.com"],
+  "lockSettings": true
+}
+```
 
 ---
 
@@ -37,8 +61,8 @@ Edge cases handled:
 
 1. Clone the repo
 2. Go to `chrome://extensions`
-3. Turn on Developer mode
-4. Load unpacked → select this folder
+3. Enable Developer mode
+4. Click **Load unpacked** → select this folder
 
 ---
 
@@ -47,18 +71,21 @@ Edge cases handled:
 ```
 src/
   content/
-    detector.js      magic bytes + ZIP inspection
-    interceptor.js   hooks all upload vectors
-    ui.js            block modal (shadow DOM, closed mode)
+    detector.js        magic bytes + ZIP inspection
+    interceptor.js     hooks all upload vectors, reads managed policy
+    page-patch.js      fetch/XHR patch (MAIN world)
+    ui.js              block modal (shadow DOM, closed mode)
+    bridge.js          CustomEvent → chrome.storage log bridge
   background/
-    service-worker.js
+    service-worker.js  badge counter
   popup/
     popup.html / popup.js   dashboard, audit log, settings
   lib/
     jszip.min.js
+  managed_schema.json  Chrome enterprise policy schema
 tests/
-  run-tests.mjs      node-based test runner
-  fixtures/          real binary test files
+  run-tests.mjs        Node.js test runner (18 test cases)
+  fixtures/            real binary test files
 ```
 
 ---
@@ -69,25 +96,13 @@ tests/
 node tests/run-tests.mjs
 ```
 
-10 test cases using real binary files — not mocked magic bytes. Covers the rename bypass, nested ZIPs, encrypted archives, clean files (no false positives), etc.
-
----
-
-## Limitations
-
-This runs in the browser so it only catches what goes through the browser. Direct API calls (curl, Postman, scripts) bypass it completely. Real DLP needs a network proxy or endpoint agent on top of this — this is just the browser layer.
-
-Other known gaps:
-- User can disable the extension
-- Incognito disables extensions by default
-- Screenshots of documents (needs OCR, out of scope)
-- Chunked/split uploads
+18 test cases using real binary files. Covers document formats, rename bypass attempts, nested archives, encrypted ZIPs, zip bombs, and clean files.
 
 ---
 
 ## Roadmap
 
-- [ ] Indonesian ID patterns (NIK, NPWP)
-- [ ] TensorFlow.js classifier for content-based detection
+- [ ] Regex-based sensitive data patterns (ID numbers, card numbers)
+- [ ] Content-based classifier for plain text data files
 - [ ] Firefox support
 - [ ] TAR/GZIP recursive inspection
