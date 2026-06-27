@@ -90,7 +90,7 @@ src/
     jszip.min.js
   managed_schema.json  Chrome enterprise policy schema
 tests/
-  run-tests.mjs        Node.js test runner (18 test cases)
+  run-tests.mjs        Node.js test runner (27 test cases)
   fixtures/            real binary test files
 ```
 
@@ -102,7 +102,15 @@ tests/
 node tests/run-tests.mjs
 ```
 
-18 test cases using real binary files. Covers document formats, rename bypass attempts, nested archives, encrypted ZIPs, zip bombs, and clean files.
+27 test cases using real binary files. Covers document formats, rename bypass attempts, nested archives, encrypted ZIPs, zip bombs, polyglot ZIPs, offset-tolerant headers, new archive formats, and clean files.
+
+---
+
+## Contributors
+
+| Contributor | What they did |
+|-------------|--------------|
+| [@andreihansel](https://github.com/andreihansel) | Identified offset-tolerant detection gaps (polyglot/prepend bypass); proposed XZ, Zstd, BZIP2, LZ4, CAB, and TAR signatures; plain text content blocking idea; GZIP signature fix |
 
 ---
 
