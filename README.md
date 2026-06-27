@@ -10,7 +10,7 @@ Chrome extension that enforces Data Loss Prevention by blocking document uploads
 
 BetterDLP intercepts uploads before they reach the network and inspects the real file type using magic bytes. A DOCX renamed to `.jpg` is still a ZIP containing `word/document.xml` — BetterDLP catches it either way.
 
-**Blocked formats:** DOCX, XLSX, PPTX, DOC, XLS, PPT, PDF, RTF, CSV, RAR, 7z, GZIP, and any ZIP containing a document.
+**Blocked formats:** DOCX, XLSX, PPTX, DOC, XLS, PPT, PDF, RTF, CSV/TSV/TXT, RAR, 7z, GZIP, XZ, Zstandard, BZIP2, LZ4, Cabinet, TAR, and any ZIP containing a document.
 
 **Upload vectors covered:**
 - `<input type="file">` — file picker, including dynamically injected inputs
@@ -24,12 +24,14 @@ BetterDLP intercepts uploads before they reach the network and inspects the real
 
 | Technique | What it catches |
 |-----------|----------------|
-| Magic bytes | Real file type regardless of extension |
-| ZIP inspection | Office documents (DOCX/XLSX/PPTX) disguised as other files |
+| Magic bytes (offset 0) | Real file type regardless of extension — OLE2, RAR, 7z, GZIP, XZ, Zstd, BZIP2, LZ4, CAB |
+| Offset-tolerant scan | PDF with junk/comment prefix, RTF with preamble, TAR (ustar at offset 257) |
+| Polyglot ZIP | ZIP header not at byte 0 — scans first 64KB, requires valid EOCD signature |
+| ZIP inspection | Office documents (DOCX/XLSX/PPTX) disguised as other file types |
 | Recursive ZIP | Documents buried inside nested archives (up to 3 levels) |
 | Encrypted ZIP | Blocked — contents cannot be verified |
 | Zip bomb | Blocked — uncompressed size > 100MB |
-| Extension fallback | CSV, TSV, TXT (no binary signature) |
+| Plain text content | CSV, TSV, TXT, and data files detected by byte content — not extension |
 
 ---
 
