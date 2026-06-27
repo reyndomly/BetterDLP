@@ -15,51 +15,73 @@ class FileReader {
   }
 }
 
-// ─── Detector (inlined, no chrome.* deps) ────────────────────────────────────
-const MAGIC = {
-  ZIP:      [0x50, 0x4B, 0x03, 0x04],
-  OLE2:     [0xD0, 0xCF, 0x11, 0xE0],
-  PDF:      [0x25, 0x50, 0x44, 0x46],
-  RTF:      [0x7B, 0x5C, 0x72, 0x74],
-  RAR4:     [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00],
-  RAR5:     [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01],
-  SEVENZIP: [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C],
-  GZIP:     [0x1F, 0x8B],
-};
+// ─── Detection (mirrors src/content/detector.js) ─────────────────────────────
+
+const BLOCKED_MAGIC = [
+  { sig: [0xD0, 0xCF, 0x11, 0xE0],                         label: 'Legacy Office document (DOC/XLS/PPT)' },
+  { sig: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00],       label: 'RAR archive'       },
+  { sig: [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01],       label: 'RAR5 archive'      },
+  { sig: [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C],             label: '7-Zip archive'     },
+  { sig: [0x1F, 0x8B, 0x08],                               label: 'GZIP archive'      },
+  { sig: [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00],             label: 'XZ archive'        },
+  { sig: [0x28, 0xB5, 0x2F, 0xFD],                         label: 'Zstandard archive' },
+  { sig: [0x42, 0x5A, 0x68],                               label: 'BZIP2 archive'     },
+  { sig: [0x04, 0x22, 0x4D, 0x18],                         label: 'LZ4 archive'       },
+  { sig: [0x4D, 0x53, 0x43, 0x46],                         label: 'Cabinet archive'   },
+];
+
+const PDF_SIG   = [0x25, 0x50, 0x44, 0x46];
+const RTF_SIG   = [0x7B, 0x5C, 0x72, 0x74];
+const TAR_SIG   = [0x75, 0x73, 0x74, 0x61, 0x72];
+const TAR_OFF   = 257;
+const PDF_SCAN  = 1024;
+const RTF_SCAN  = 64;
+const ZIP_LOCAL = [0x50, 0x4B, 0x03, 0x04];
+const ZIP_EOCD  = [0x50, 0x4B, 0x05, 0x06];
+const ZIP_SCAN  = 64 * 1024;
 
 const OFFICE_PATHS = [
   'word/document.xml', 'xl/workbook.xml', 'ppt/presentation.xml',
   'content.xml', 'META-INF/manifest.xml',
 ];
 
-const MAX_DEPTH = 3;
+const MAX_DEPTH  = 3;
 const MAX_UNCOMP = 100 * 1024 * 1024;
 
-function match(bytes, magic) { return magic.every((b, i) => bytes[i] === b); }
-
-function readBytes(blob, count = 8) {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = e => resolve(new Uint8Array(e.target.result));
-    fr.onerror = reject;
-    fr.readAsArrayBuffer({ arrayBuffer: () => blob.arrayBuffer().then(b => b.slice(0, count)), _buf: null });
-  });
+function matchesAt(bytes, sig, offset) {
+  if (bytes.length < offset + sig.length) return false;
+  return sig.every((b, i) => bytes[offset + i] === b);
 }
 
-function readAll(blob) {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = e => resolve(e.target.result);
-    fr.onerror = reject;
-    fr.readAsArrayBuffer(blob);
-  });
-}
+function matchesMagic(bytes, sig) { return matchesAt(bytes, sig, 0); }
 
-function isZipEncrypted(bytes) {
-  if (match(bytes, MAGIC.ZIP)) {
-    return (bytes[6] | (bytes[7] << 8)) & 0x01;
+function indexOfSig(bytes, sig, maxScan) {
+  const limit = Math.min(bytes.length, maxScan) - sig.length;
+  for (let i = 0; i <= limit; i++) {
+    if (sig.every((b, j) => bytes[i + j] === b)) return i;
   }
-  return false;
+  return -1;
+}
+
+function findZipStart(bytes) {
+  if (matchesMagic(bytes, ZIP_LOCAL)) return 0;
+  if (indexOfSig(bytes, ZIP_EOCD, bytes.length) === -1) return -1;
+  return indexOfSig(bytes, ZIP_LOCAL, ZIP_SCAN);
+}
+
+function isZipEncrypted(bytes, offset) {
+  if (!matchesAt(bytes, ZIP_LOCAL, offset)) return false;
+  return ((bytes[offset + 6] | (bytes[offset + 7] << 8)) & 0x01) !== 0;
+}
+
+function isPlainText(bytes) {
+  const sample = bytes.length > 512 ? bytes.subarray(0, 512) : bytes;
+  for (const b of sample) {
+    if (b === 0x09 || b === 0x0A || b === 0x0D) continue;
+    if (b >= 0x20 && b <= 0x7E) continue;
+    if (b === 0x00 || b < 0x09) return false;
+  }
+  return true;
 }
 
 async function inspectZip(buf, depth = 0) {
@@ -70,17 +92,17 @@ async function inspectZip(buf, depth = 0) {
   try {
     zip = await JSZip.loadAsync(buf);
   } catch (err) {
-    const msg = err.message || '';
-    if (msg.toLowerCase().includes('encrypt') || msg.toLowerCase().includes('password'))
+    const msg = (err && err.message || '').toLowerCase();
+    if (msg.includes('encrypt') || msg.includes('password'))
       return { blocked: true, reason: 'Password-protected archive — cannot inspect contents' };
-    return { blocked: true, reason: 'Unreadable archive: ' + msg };
+    return { blocked: true, reason: 'Unreadable archive format' };
   }
 
   const names = Object.keys(zip.files);
 
   for (const op of OFFICE_PATHS) {
     if (names.some(n => n === op || n.endsWith('/' + op)))
-      return { blocked: true, reason: `Office document detected (contains ${op})` };
+      return { blocked: true, reason: `Office document detected (${op})` };
   }
 
   for (const name of names) {
@@ -93,68 +115,44 @@ async function inspectZip(buf, depth = 0) {
     try { entryBuf = await entry.async('arraybuffer'); }
     catch { return { blocked: true, reason: `Encrypted entry: ${name}` }; }
 
-    const r = await detectType(new Uint8Array(entryBuf), entryBuf, depth + 1);
+    const r = await detectFileType(new Uint8Array(entryBuf), entryBuf);
     if (r.blocked) return { blocked: true, reason: `${r.reason} (inside: ${name})` };
   }
 
   return { blocked: true, reason: 'ZIP archive — all archives blocked by policy' };
 }
 
-async function detectType(bytes, buf = null, depth = 0) {
-  if (match(bytes, MAGIC.OLE2))     return { blocked: true, reason: 'Legacy Office document (DOC/XLS/PPT)' };
-  if (match(bytes, MAGIC.PDF))      return { blocked: true, reason: 'PDF document' };
-  if (match(bytes, MAGIC.RTF))      return { blocked: true, reason: 'RTF document' };
-  if (match(bytes, MAGIC.RAR4) ||
-      match(bytes, MAGIC.RAR5))     return { blocked: true, reason: 'RAR archive — cannot inspect' };
-  if (match(bytes, MAGIC.SEVENZIP)) return { blocked: true, reason: '7-Zip archive — cannot inspect' };
-  if (match(bytes, MAGIC.GZIP))     return { blocked: true, reason: 'GZIP archive — cannot inspect' };
-
-  if (match(bytes, MAGIC.ZIP)) {
-    if (isZipEncrypted(bytes))      return { blocked: true, reason: 'Password-protected ZIP' };
-    if (!buf)                        return { blocked: true, reason: 'ZIP — full buffer required' };
-    return await inspectZip(buf, depth);
+async function detectFileType(bytes, buf = null) {
+  for (const { sig, label } of BLOCKED_MAGIC) {
+    if (matchesMagic(bytes, sig)) return { blocked: true, reason: label };
   }
+
+  if (indexOfSig(bytes, PDF_SIG, PDF_SCAN) !== -1)
+    return { blocked: true, reason: 'PDF document' };
+  if (indexOfSig(bytes, RTF_SIG, RTF_SCAN) !== -1)
+    return { blocked: true, reason: 'RTF document' };
+  if (matchesAt(bytes, TAR_SIG, TAR_OFF))
+    return { blocked: true, reason: 'TAR archive' };
+
+  const zipStart = findZipStart(bytes);
+  if (zipStart !== -1) {
+    if (isZipEncrypted(bytes, zipStart))
+      return { blocked: true, reason: 'Password-protected ZIP archive' };
+    if (!buf)
+      return { blocked: true, reason: 'ZIP archive — blocked by policy' };
+    const slice = zipStart > 0 ? buf.slice(zipStart) : buf;
+    return await inspectZip(slice, 0);
+  }
+
+  if (isPlainText(bytes))
+    return { blocked: true, reason: 'Text/data file — blocked by policy' };
 
   return { blocked: false, reason: 'File type allowed' };
 }
 
-const NO_MAGIC_EXT = new Set(['csv', 'tsv', 'txt']);
-
-const BINARY_EXT_MAGIC = {
-  jpg:  [0xFF, 0xD8, 0xFF],
-  jpeg: [0xFF, 0xD8, 0xFF],
-  png:  [0x89, 0x50, 0x4E, 0x47],
-  gif:  [0x47, 0x49, 0x46, 0x38],
-  bmp:  [0x42, 0x4D],
-  ico:  [0x00, 0x00, 0x01, 0x00],
-  mp4:  [0x00, 0x00, 0x00],
-  webp: [0x52, 0x49, 0x46, 0x46],
-};
-
-function isPlainText(bytes) {
-  const sample = bytes.slice(0, 512);
-  for (const b of sample) {
-    if (b === 0x09 || b === 0x0A || b === 0x0D) continue;
-    if (b >= 0x20 && b <= 0x7E) continue;
-    if (b === 0x00 || b < 0x09) return false;
-  }
-  return true;
-}
-
 async function inspectFile(blob) {
-  const ext = (blob.name || '').split('.').pop().toLowerCase();
-  if (NO_MAGIC_EXT.has(ext)) {
-    return { blocked: true, reason: `${ext.toUpperCase()} file — no magic bytes, blocked by extension` };
-  }
   const buf = await blob.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  const result = await detectType(bytes, buf, 0);
-  if (result.blocked) return result;
-  const expectedMagic = BINARY_EXT_MAGIC[ext];
-  if (expectedMagic && !match(bytes, expectedMagic) && isPlainText(bytes)) {
-    return { blocked: true, reason: `File type mismatch — claims to be ${ext.toUpperCase()} but contains plain text` };
-  }
-  return result;
+  return detectFileType(new Uint8Array(buf), buf);
 }
 
 // ─── File helper ──────────────────────────────────────────────────────────────
@@ -169,28 +167,37 @@ function makeBlob(filename) {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 const TESTS = [
   // Core document formats
-  { name: 'Real DOCX',                  file: 'real.docx',            expect: 'BLOCKED' },
-  { name: 'Real XLSX',                  file: 'real.xlsx',            expect: 'BLOCKED' },
-  { name: 'Real PPTX',                  file: 'real.pptx',            expect: 'BLOCKED' },
-  { name: 'Legacy DOC (OLE2)',          file: 'legacy.doc',           expect: 'BLOCKED' },
-  { name: 'PDF',                        file: 'document.pdf',         expect: 'BLOCKED' },
-  { name: 'RTF',                        file: 'real.rtf',             expect: 'BLOCKED' },
+  { name: 'Real DOCX',                  file: 'real.docx',              expect: 'BLOCKED' },
+  { name: 'Real XLSX',                  file: 'real.xlsx',              expect: 'BLOCKED' },
+  { name: 'Real PPTX',                  file: 'real.pptx',              expect: 'BLOCKED' },
+  { name: 'Legacy DOC (OLE2)',          file: 'legacy.doc',             expect: 'BLOCKED' },
+  { name: 'PDF',                        file: 'document.pdf',           expect: 'BLOCKED' },
+  { name: 'PDF (offset header)',        file: 'offset_header.pdf',      expect: 'BLOCKED' },
+  { name: 'RTF',                        file: 'real.rtf',               expect: 'BLOCKED' },
+  // Archive formats
+  { name: 'RAR Archive',                file: 'archive.rar',            expect: 'BLOCKED' },
+  { name: '7-Zip Archive',              file: 'archive.7z',             expect: 'BLOCKED' },
+  { name: 'GZIP Archive',              file: 'archive.gz',             expect: 'BLOCKED' },
+  { name: 'XZ Archive',                file: 'archive.xz',             expect: 'BLOCKED' },
+  { name: 'Zstandard Archive',          file: 'archive.zst',            expect: 'BLOCKED' },
+  { name: 'BZIP2 Archive',              file: 'archive.bz2',            expect: 'BLOCKED' },
+  { name: 'LZ4 Archive',                file: 'archive.lz4',            expect: 'BLOCKED' },
+  { name: 'Cabinet Archive',            file: 'archive.cab',            expect: 'BLOCKED' },
+  { name: 'TAR Archive',                file: 'archive.tar',            expect: 'BLOCKED' },
   // Bypass attempts
-  { name: 'DOCX renamed to .jpg',       file: 'photo_disguised.jpg',  expect: 'BLOCKED' },
-  { name: 'ZIP with DOCX inside',       file: 'archive_with_doc.zip', expect: 'BLOCKED' },
-  { name: 'Encrypted ZIP',              file: 'encrypted.zip',        expect: 'BLOCKED' },
-  { name: 'RAR Archive',                file: 'archive.rar',          expect: 'BLOCKED' },
-  { name: '7-Zip Archive',              file: 'archive.7z',           expect: 'BLOCKED' },
-  { name: 'GZIP Archive',               file: 'archive.gz',           expect: 'BLOCKED' },
-  { name: 'Zip Bomb (200MB declared)',   file: 'zipbomb.zip',          expect: 'BLOCKED' },
-  { name: 'Nested ZIP (2 levels)',       file: 'nested.zip',           expect: 'BLOCKED' },
-  { name: 'Nested ZIP (3 levels)',       file: 'triple_nested.zip',    expect: 'BLOCKED' },
-  // No-magic-bytes formats (extension-based detection)
-  { name: 'CSV file',                   file: 'data.csv',             expect: 'BLOCKED' },
-  { name: 'CSV renamed to .jpg',        file: 'csv_as_image.jpg',     expect: 'BLOCKED' },
+  { name: 'DOCX renamed to .jpg',       file: 'photo_disguised.jpg',    expect: 'BLOCKED' },
+  { name: 'ZIP with DOCX inside',       file: 'archive_with_doc.zip',   expect: 'BLOCKED' },
+  { name: 'Encrypted ZIP',              file: 'encrypted.zip',          expect: 'BLOCKED' },
+  { name: 'Zip Bomb (200MB declared)',  file: 'zipbomb.zip',            expect: 'BLOCKED' },
+  { name: 'Nested ZIP (2 levels)',      file: 'nested.zip',             expect: 'BLOCKED' },
+  { name: 'Nested ZIP (3 levels)',      file: 'triple_nested.zip',      expect: 'BLOCKED' },
+  { name: 'Polyglot ZIP (prepend)',     file: 'polyglot_docx.zip',      expect: 'BLOCKED' },
+  // Plain text detection (content-based, extension-agnostic)
+  { name: 'CSV file',                   file: 'data.csv',               expect: 'BLOCKED' },
+  { name: 'CSV renamed to .jpg',        file: 'csv_as_image.jpg',       expect: 'BLOCKED' },
   // Should pass
-  { name: 'Clean ZIP (images only)',    file: 'clean_photos.zip',     expect: 'BLOCKED' },
-  { name: 'Real PNG Image',             file: 'real_image.png',       expect: 'ALLOWED' },
+  { name: 'Clean ZIP (images only)',    file: 'clean_photos.zip',       expect: 'BLOCKED' },
+  { name: 'Real PNG Image',             file: 'real_image.png',         expect: 'ALLOWED' },
 ];
 
 const G = '\x1b[32m', R = '\x1b[31m', Y = '\x1b[33m', D = '\x1b[2m', B = '\x1b[1m', X = '\x1b[0m';
@@ -208,11 +215,11 @@ for (const t of TESTS) {
     if (ok) passed++; else { failed++; failures.push({ ...t, actual, reason: result.reason }); }
     const icon = ok ? `${G}✓${X}` : `${R}✗${X}`;
     const col  = actual === 'BLOCKED' ? R : G;
-    console.log(`  ${icon} ${t.name.padEnd(26)} ${col}${actual.padEnd(8)}${X} ${D}${result.reason}${X}`);
+    console.log(`  ${icon} ${t.name.padEnd(28)} ${col}${actual.padEnd(8)}${X} ${D}${result.reason}${X}`);
   } catch (err) {
     failed++;
     failures.push({ ...t, actual: 'ERROR', reason: err.message });
-    console.log(`  ${Y}!${X} ${t.name.padEnd(26)} ${Y}ERROR${X}    ${err.message}`);
+    console.log(`  ${Y}!${X} ${t.name.padEnd(28)} ${Y}ERROR${X}    ${err.message}`);
   }
 }
 

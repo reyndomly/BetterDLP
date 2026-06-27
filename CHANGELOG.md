@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.0] — 2026-06-27
+
+### Added
+- XZ, Zstandard, BZIP2, LZ4, Cabinet, and TAR archive detection
+- Offset-tolerant PDF detection — scans first 1KB (catches PDFs with comment headers before `%PDF`)
+- Offset-tolerant RTF detection — scans first 64 bytes
+- Offset-tolerant ZIP detection — scans up to 64KB to catch prepended-byte polyglot attacks
+- Plain text content blocking — detects CSV, TSV, TXT, and data files by content regardless of extension
+- `indexOfSig` / `findZipStart` helper functions for offset-tolerant scanning
+
+### Fixed
+- GZIP signature extended to 3 bytes (`0x1F 0x8B 0x08`) to reduce false positives on binary traffic
+- Raw `Blob` bodies no longer intercepted in fetch/XHR — only `File` and `FormData` with `File` parts, fixing WhatsApp and Telegram
+
+### Changed
+- Extension-based CSV/TSV/TXT fallback replaced by content-based plain text detection
+- Test suite updated to mirror new detection logic; 8 new test cases (27 total)
+
 ## [0.1.1] — 2026-06-27
 
 ### Fixed
