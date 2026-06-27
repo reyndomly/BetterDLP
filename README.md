@@ -112,3 +112,4 @@ node tests/run-tests.mjs
 - [ ] Content-based classifier for plain text data files
 - [ ] Firefox support
 - [ ] TAR/GZIP recursive inspection
+
