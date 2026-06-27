@@ -106,14 +106,6 @@ node tests/run-tests.mjs
 
 ---
 
-## Contributors
-
-| Contributor | What they did |
-|-------------|--------------|
-| [@andreihansel](https://github.com/andreihansel) | Identified offset-tolerant detection gaps (polyglot/prepend bypass); proposed XZ, Zstd, BZIP2, LZ4, CAB, and TAR signatures; plain text content blocking idea; GZIP signature fix |
-
----
-
 ## Roadmap
 
 - [ ] Regex-based sensitive data patterns (ID numbers, card numbers)
