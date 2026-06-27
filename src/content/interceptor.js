@@ -113,24 +113,71 @@
     }
   }, true);
 
-  document.addEventListener('drop', async function (e) {
+  document.addEventListener('drop', function (e) {
     if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
-    var blocked = await handleFiles(Array.from(e.dataTransfer.files), 'drag & drop');
-    if (blocked) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }
+    if (!e.isTrusted) return;
+
+    var files = Array.from(e.dataTransfer.files);
+    var target = e.target;
+
+    // Stop synchronously — prevents preview before async inspection completes
+    e.stopImmediatePropagation();
+    e.preventDefault();
+
+    handleFiles(files, 'drag & drop').then(function (blocked) {
+      if (!blocked) {
+        // File is clean — re-dispatch so the app handles it normally
+        try {
+          var dt = new DataTransfer();
+          files.forEach(function (f) { dt.items.add(f); });
+          var syntheticDrop = new DragEvent('drop', {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: dt,
+          });
+          (target || document.body).dispatchEvent(syntheticDrop);
+        } catch (_) {
+          // DragEvent re-dispatch not supported
+        }
+      }
+    });
   }, true);
 
   // ─── Clipboard Paste ─────────────────────────────────────────────────────────
+  // Mirror the same fix as input[type=file]: stop synchronously so the app never
+  // sees the event and cannot show a preview, then re-dispatch with a synthetic
+  // (non-trusted) ClipboardEvent if the file turns out to be clean.
 
-  document.addEventListener('paste', async function (e) {
+  document.addEventListener('paste', function (e) {
     if (!e.clipboardData || !e.clipboardData.files || e.clipboardData.files.length === 0) return;
-    var blocked = await handleFiles(Array.from(e.clipboardData.files), 'clipboard paste');
-    if (blocked) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-    }
+
+    // Ignore our own re-dispatched synthetic events
+    if (!e.isTrusted) return;
+
+    var files = Array.from(e.clipboardData.files);
+    var target = e.target;
+
+    // Stop synchronously — app never sees this event, no preview shown
+    e.stopImmediatePropagation();
+    e.preventDefault();
+
+    handleFiles(files, 'clipboard paste').then(function (blocked) {
+      if (!blocked) {
+        // File is clean — re-dispatch so the app handles it normally
+        try {
+          var dt = new DataTransfer();
+          files.forEach(function (f) { dt.items.add(f); });
+          var syntheticPaste = new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: dt,
+          });
+          (target || document.activeElement || document.body).dispatchEvent(syntheticPaste);
+        } catch (_) {
+          // DataTransfer construction not supported; clean file won't be re-delivered
+        }
+      }
+    });
   }, true);
 
 })();
