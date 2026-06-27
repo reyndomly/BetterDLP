@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.1] — 2026-06-27
+
+### Fixed
+- Clipboard paste: blocked files could briefly appear in app preview before being stopped — events are now intercepted synchronously, with a synthetic re-dispatch for clean files
+- Drag and drop: same race condition fixed with the same synchronous-stop + re-dispatch pattern
+
 ## [0.1.0] — 2026-06-26
 
 ### Added
