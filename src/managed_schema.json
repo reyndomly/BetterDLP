@@ -22,6 +22,11 @@
       "title": "Lock Settings",
       "description": "Prevent users from modifying protection mode and domain list.",
       "type": "boolean"
+    },
+    "networkEnforcement": {
+      "title": "Network Backstop",
+      "description": "Enable the webRequest backstop that inspects upload bodies from any JS realm (workers, raw fetch bodies). Requires the extension to be force-installed. Default true.",
+      "type": "boolean"
     }
   }
 }

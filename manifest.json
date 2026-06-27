@@ -5,7 +5,9 @@
   "description": "Data Loss Prevention extension — blocks document uploads to prevent sensitive file exfiltration.",
   "permissions": [
     "storage",
-    "notifications"
+    "notifications",
+    "webRequest",
+    "webRequestBlocking"
   ],
   "storage": {
     "managed_schema": "src/managed_schema.json"
@@ -21,6 +23,7 @@
       "matches": ["<all_urls>"],
       "js": [
         "src/lib/jszip.min.js",
+        "src/lib/detection-core.js",
         "src/content/page-patch.js"
       ],
       "run_at": "document_start",
@@ -30,6 +33,8 @@
     {
       "matches": ["<all_urls>"],
       "js": [
+        "src/lib/jszip.min.js",
+        "src/lib/detection-core.js",
         "src/content/detector.js",
         "src/content/ui.js",
         "src/content/interceptor.js",

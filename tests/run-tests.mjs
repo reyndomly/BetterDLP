@@ -1,223 +1,215 @@
 import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 
-// ─── JSZip shim ───────────────────────────────────────────────────────────────
-const jszipCode = readFileSync(new URL('../src/lib/jszip.min.js', import.meta.url).pathname, 'utf8');
-const mod = { exports: {} };
-(new Function('module', 'exports', jszipCode))(mod, mod.exports);
-const JSZip = mod.exports;
+const resolve = (rel) => fileURLToPath(new URL(rel, import.meta.url));
 
-// ─── FileReader shim ──────────────────────────────────────────────────────────
-class FileReader {
-  readAsArrayBuffer(blob) {
-    Promise.resolve(blob._buf ? blob._buf : blob.arrayBuffer())
-      .then(buf => this.onload({ target: { result: buf } }))
-      .catch(err => this.onerror && this.onerror(err));
-  }
-}
+// ─── Load shipped JSZip ───────────────────────────────────────────────────────
+const jszipCode = readFileSync(resolve('../src/lib/jszip.min.js'), 'utf8');
+const jmod = { exports: {} };
+(new Function('module', 'exports', jszipCode))(jmod, jmod.exports);
+const JSZip = jmod.exports;
 
-// ─── Detector (inlined, no chrome.* deps) ────────────────────────────────────
-const MAGIC = {
-  ZIP:      [0x50, 0x4B, 0x03, 0x04],
-  OLE2:     [0xD0, 0xCF, 0x11, 0xE0],
-  PDF:      [0x25, 0x50, 0x44, 0x46],
-  RTF:      [0x7B, 0x5C, 0x72, 0x74],
-  RAR4:     [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00],
-  RAR5:     [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01],
-  SEVENZIP: [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C],
-  GZIP:     [0x1F, 0x8B],
-};
+// ─── Load the shared detection core (single source of truth) ──────────────────
+const coreCode = readFileSync(resolve('../src/lib/detection-core.js'), 'utf8');
+const cmod = { exports: {} };
+(new Function('module', 'exports', coreCode))(cmod, cmod.exports);
+const Core = cmod.exports;
 
-const OFFICE_PATHS = [
-  'word/document.xml', 'xl/workbook.xml', 'ppt/presentation.xml',
-  'content.xml', 'META-INF/manifest.xml',
-];
+// ─── Async inspectFile — mirrors src/content/detector.js exactly ──────────────
+// (Deep JSZip inspection here; the synchronous rules live in detection-core.js.)
+async function inspectZip(bytes, zipStart, depth) {
+  if (depth > Core.MAX_ZIP_DEPTH)
+    return { blocked: true, reason: `Archive nested too deep (limit: ${Core.MAX_ZIP_DEPTH})` };
 
-const MAX_DEPTH = 3;
-const MAX_UNCOMP = 100 * 1024 * 1024;
-
-function match(bytes, magic) { return magic.every((b, i) => bytes[i] === b); }
-
-function readBytes(blob, count = 8) {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = e => resolve(new Uint8Array(e.target.result));
-    fr.onerror = reject;
-    fr.readAsArrayBuffer({ arrayBuffer: () => blob.arrayBuffer().then(b => b.slice(0, count)), _buf: null });
-  });
-}
-
-function readAll(blob) {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = e => resolve(e.target.result);
-    fr.onerror = reject;
-    fr.readAsArrayBuffer(blob);
-  });
-}
-
-function isZipEncrypted(bytes) {
-  if (match(bytes, MAGIC.ZIP)) {
-    return (bytes[6] | (bytes[7] << 8)) & 0x01;
-  }
-  return false;
-}
-
-async function inspectZip(buf, depth = 0) {
-  if (depth > MAX_DEPTH)
-    return { blocked: true, reason: `Archive nested too deep (limit: ${MAX_DEPTH})` };
+  const slice = zipStart > 0 ? bytes.subarray(zipStart) : bytes;
 
   let zip;
-  try {
-    zip = await JSZip.loadAsync(buf);
-  } catch (err) {
-    const msg = err.message || '';
-    if (msg.toLowerCase().includes('encrypt') || msg.toLowerCase().includes('password'))
+  try { zip = await JSZip.loadAsync(slice); }
+  catch (err) {
+    const msg = (err && err.message || '').toLowerCase();
+    if (msg.includes('encrypt') || msg.includes('password'))
       return { blocked: true, reason: 'Password-protected archive — cannot inspect contents' };
-    return { blocked: true, reason: 'Unreadable archive: ' + msg };
+    return { blocked: true, reason: 'Archive — all archives blocked by policy' };
   }
 
   const names = Object.keys(zip.files);
 
-  for (const op of OFFICE_PATHS) {
+  for (const op of Core.OFFICE_ZIP_PATHS) {
     if (names.some(n => n === op || n.endsWith('/' + op)))
-      return { blocked: true, reason: `Office document detected (contains ${op})` };
+      return { blocked: true, reason: 'Office document detected inside archive' };
   }
 
   for (const name of names) {
     const entry = zip.files[name];
     if (entry.dir) continue;
-    if (entry._data && entry._data.uncompressedSize > MAX_UNCOMP)
+    if (entry._data && entry._data.uncompressedSize > Core.MAX_UNCOMPRESSED_BYTES)
       return { blocked: true, reason: 'Archive entry too large — possible zip bomb' };
 
-    let entryBuf;
-    try { entryBuf = await entry.async('arraybuffer'); }
-    catch { return { blocked: true, reason: `Encrypted entry: ${name}` }; }
+    let eb;
+    try { eb = new Uint8Array(await entry.async('arraybuffer')); }
+    catch { return { blocked: true, reason: `Encrypted entry detected: ${name}` }; }
 
-    const r = await detectType(new Uint8Array(entryBuf), entryBuf, depth + 1);
-    if (r.blocked) return { blocked: true, reason: `${r.reason} (inside: ${name})` };
+    const nestedStart = Core.findZipStart(eb);
+    if (nestedStart !== -1) {
+      const nested = await inspectZip(eb, nestedStart, depth + 1);
+      if (nested.blocked) return { blocked: true, reason: `${nested.reason} (inside: ${name})` };
+      continue;
+    }
+    const sig = Core.sniffBinarySignature(eb);
+    if (sig) return { blocked: true, reason: `${sig.reason} (inside: ${name})` };
+    if (Core.isPlainText(eb)) {
+      const pii = Core.scanTextContent(Core.bytesToText(eb, 256 * 1024));
+      if (pii) return { blocked: true, reason: `${pii.reason} (inside: ${name})` };
+    }
   }
 
   return { blocked: true, reason: 'ZIP archive — all archives blocked by policy' };
 }
 
-async function detectType(bytes, buf = null, depth = 0) {
-  if (match(bytes, MAGIC.OLE2))     return { blocked: true, reason: 'Legacy Office document (DOC/XLS/PPT)' };
-  if (match(bytes, MAGIC.PDF))      return { blocked: true, reason: 'PDF document' };
-  if (match(bytes, MAGIC.RTF))      return { blocked: true, reason: 'RTF document' };
-  if (match(bytes, MAGIC.RAR4) ||
-      match(bytes, MAGIC.RAR5))     return { blocked: true, reason: 'RAR archive — cannot inspect' };
-  if (match(bytes, MAGIC.SEVENZIP)) return { blocked: true, reason: '7-Zip archive — cannot inspect' };
-  if (match(bytes, MAGIC.GZIP))     return { blocked: true, reason: 'GZIP archive — cannot inspect' };
-
-  if (match(bytes, MAGIC.ZIP)) {
-    if (isZipEncrypted(bytes))      return { blocked: true, reason: 'Password-protected ZIP' };
-    if (!buf)                        return { blocked: true, reason: 'ZIP — full buffer required' };
-    return await inspectZip(buf, depth);
-  }
-
-  return { blocked: false, reason: 'File type allowed' };
-}
-
-const NO_MAGIC_EXT = new Set(['csv', 'tsv', 'txt']);
-
-const BINARY_EXT_MAGIC = {
-  jpg:  [0xFF, 0xD8, 0xFF],
-  jpeg: [0xFF, 0xD8, 0xFF],
-  png:  [0x89, 0x50, 0x4E, 0x47],
-  gif:  [0x47, 0x49, 0x46, 0x38],
-  bmp:  [0x42, 0x4D],
-  ico:  [0x00, 0x00, 0x01, 0x00],
-  mp4:  [0x00, 0x00, 0x00],
-  webp: [0x52, 0x49, 0x46, 0x46],
-};
-
-function isPlainText(bytes) {
-  const sample = bytes.slice(0, 512);
-  for (const b of sample) {
-    if (b === 0x09 || b === 0x0A || b === 0x0D) continue;
-    if (b >= 0x20 && b <= 0x7E) continue;
-    if (b === 0x00 || b < 0x09) return false;
-  }
-  return true;
-}
-
 async function inspectFile(blob) {
-  const ext = (blob.name || '').split('.').pop().toLowerCase();
-  if (NO_MAGIC_EXT.has(ext)) {
-    return { blocked: true, reason: `${ext.toUpperCase()} file — no magic bytes, blocked by extension` };
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const zipStart = Core.findZipStart(bytes);
+  if (zipStart !== -1) {
+    if (Core.isZipEncrypted(bytes, zipStart))
+      return { blocked: true, reason: 'Password-protected ZIP archive' };
+    return await inspectZip(bytes, zipStart, 0);
   }
-  const buf = await blob.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  const result = await detectType(bytes, buf, 0);
-  if (result.blocked) return result;
-  const expectedMagic = BINARY_EXT_MAGIC[ext];
-  if (expectedMagic && !match(bytes, expectedMagic) && isPlainText(bytes)) {
-    return { blocked: true, reason: `File type mismatch — claims to be ${ext.toUpperCase()} but contains plain text` };
-  }
-  return result;
+  return Core.inspectFileBytes(bytes, blob.name);
 }
 
-// ─── File helper ──────────────────────────────────────────────────────────────
+// ─── Fixture / blob helpers ───────────────────────────────────────────────────
+function fixtureBytes(filename) {
+  const raw = readFileSync(resolve(`fixtures/${filename}`));
+  return new Uint8Array(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
+}
 function makeBlob(filename) {
-  const raw = readFileSync(new URL(`fixtures/${filename}`, import.meta.url).pathname);
-  return {
-    name: filename,
-    arrayBuffer: () => Promise.resolve(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)),
-  };
+  const u8 = fixtureBytes(filename);
+  return { name: filename, arrayBuffer: () => Promise.resolve(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)) };
+}
+function blobFrom(name, u8) {
+  return { name, arrayBuffer: () => Promise.resolve(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)) };
+}
+const enc = (s) => new TextEncoder().encode(s);
+function concat(...arrs) {
+  const total = arrs.reduce((n, a) => n + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrs) { out.set(a, off); off += a.length; }
+  return out;
+}
+
+// ─── Synthetic bypass payloads (built from real fixtures) ─────────────────────
+const DOCX = fixtureBytes('real.docx');
+const PNG  = fixtureBytes('real_image.png');
+const CSV  = 'employee_id,ssn,salary\n1001,123-45-6789,250000\n1002,987-65-4321,310000\n1003,111-22-3333,90000\n';
+const PROSE = '# Project Notes\n\nThis is an ordinary readme describing the build steps.\nNothing sensitive lives in this file at all.\nIt is just prose for humans to read.\n';
+
+function tarBytes() {
+  const h = new Uint8Array(512);
+  h.set(enc('ustar'), 257);
+  return concat(h, enc(CSV));
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 const TESTS = [
   // Core document formats
-  { name: 'Real DOCX',                  file: 'real.docx',            expect: 'BLOCKED' },
-  { name: 'Real XLSX',                  file: 'real.xlsx',            expect: 'BLOCKED' },
-  { name: 'Real PPTX',                  file: 'real.pptx',            expect: 'BLOCKED' },
-  { name: 'Legacy DOC (OLE2)',          file: 'legacy.doc',           expect: 'BLOCKED' },
-  { name: 'PDF',                        file: 'document.pdf',         expect: 'BLOCKED' },
-  { name: 'RTF',                        file: 'real.rtf',             expect: 'BLOCKED' },
-  // Bypass attempts
-  { name: 'DOCX renamed to .jpg',       file: 'photo_disguised.jpg',  expect: 'BLOCKED' },
-  { name: 'ZIP with DOCX inside',       file: 'archive_with_doc.zip', expect: 'BLOCKED' },
-  { name: 'Encrypted ZIP',              file: 'encrypted.zip',        expect: 'BLOCKED' },
-  { name: 'RAR Archive',                file: 'archive.rar',          expect: 'BLOCKED' },
-  { name: '7-Zip Archive',              file: 'archive.7z',           expect: 'BLOCKED' },
-  { name: 'GZIP Archive',               file: 'archive.gz',           expect: 'BLOCKED' },
-  { name: 'Zip Bomb (200MB declared)',   file: 'zipbomb.zip',          expect: 'BLOCKED' },
-  { name: 'Nested ZIP (2 levels)',       file: 'nested.zip',           expect: 'BLOCKED' },
-  { name: 'Nested ZIP (3 levels)',       file: 'triple_nested.zip',    expect: 'BLOCKED' },
-  // No-magic-bytes formats (extension-based detection)
-  { name: 'CSV file',                   file: 'data.csv',             expect: 'BLOCKED' },
-  { name: 'CSV renamed to .jpg',        file: 'csv_as_image.jpg',     expect: 'BLOCKED' },
-  // Should pass
-  { name: 'Clean ZIP (images only)',    file: 'clean_photos.zip',     expect: 'BLOCKED' },
-  { name: 'Real PNG Image',             file: 'real_image.png',       expect: 'ALLOWED' },
+  { name: 'Real DOCX',                  blob: makeBlob('real.docx'),            expect: 'BLOCKED' },
+  { name: 'Real XLSX',                  blob: makeBlob('real.xlsx'),            expect: 'BLOCKED' },
+  { name: 'Real PPTX',                  blob: makeBlob('real.pptx'),            expect: 'BLOCKED' },
+  { name: 'Legacy DOC (OLE2)',          blob: makeBlob('legacy.doc'),           expect: 'BLOCKED' },
+  { name: 'PDF',                        blob: makeBlob('document.pdf'),         expect: 'BLOCKED' },
+  { name: 'RTF',                        blob: makeBlob('real.rtf'),             expect: 'BLOCKED' },
+  // Original bypass attempts
+  { name: 'DOCX renamed to .jpg',       blob: makeBlob('photo_disguised.jpg'),  expect: 'BLOCKED' },
+  { name: 'ZIP with DOCX inside',       blob: makeBlob('archive_with_doc.zip'), expect: 'BLOCKED' },
+  { name: 'Encrypted ZIP',              blob: makeBlob('encrypted.zip'),        expect: 'BLOCKED' },
+  { name: 'RAR Archive',                blob: makeBlob('archive.rar'),          expect: 'BLOCKED' },
+  { name: '7-Zip Archive',              blob: makeBlob('archive.7z'),           expect: 'BLOCKED' },
+  { name: 'GZIP Archive',               blob: makeBlob('archive.gz'),           expect: 'BLOCKED' },
+  { name: 'Zip Bomb (200MB declared)',  blob: makeBlob('zipbomb.zip'),          expect: 'BLOCKED' },
+  { name: 'Nested ZIP (2 levels)',      blob: makeBlob('nested.zip'),           expect: 'BLOCKED' },
+  { name: 'Nested ZIP (3 levels)',      blob: makeBlob('triple_nested.zip'),    expect: 'BLOCKED' },
+  { name: 'CSV file',                   blob: makeBlob('data.csv'),             expect: 'BLOCKED' },
+  { name: 'CSV renamed to .jpg',        blob: makeBlob('csv_as_image.jpg'),     expect: 'BLOCKED' },
+  { name: 'Clean ZIP (images only)',    blob: makeBlob('clean_photos.zip'),     expect: 'BLOCKED' },
+  { name: 'Real PNG Image',             blob: makeBlob('real_image.png'),       expect: 'ALLOWED' },
+
+  // ── New: bypasses found in the red-team analysis ──
+  { name: 'DOCX w/ prepended junk',     blob: blobFrom('prepend.docx', concat(enc('JUNK'), DOCX)),                 expect: 'BLOCKED' },
+  { name: 'PNG-header DOCX polyglot',   blob: blobFrom('poly.png', concat(new Uint8Array([0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A]), DOCX)), expect: 'BLOCKED' },
+  { name: 'CSV renamed to .md',         blob: blobFrom('data.md', enc(CSV)),                                       expect: 'BLOCKED' },
+  { name: 'CSV renamed to .dat',        blob: blobFrom('data.dat', enc(CSV)),                                      expect: 'BLOCKED' },
+  { name: 'CSV with no extension',      blob: blobFrom('EXPORT', enc(CSV)),                                        expect: 'BLOCKED' },
+  { name: 'PII text as .json',          blob: blobFrom('export.json', enc(JSON.stringify({ ssn: '123-45-6789' }))), expect: 'BLOCKED' },
+  { name: 'TAR container of CSV',        blob: blobFrom('data.tar', tarBytes()),                                    expect: 'BLOCKED' },
+  { name: 'XZ container',               blob: blobFrom('data.xz', concat(new Uint8Array([0xFD,0x37,0x7A,0x58,0x5A,0x00]), enc(CSV))), expect: 'BLOCKED' },
+  { name: 'Zstandard container',        blob: blobFrom('data.zst', concat(new Uint8Array([0x28,0xB5,0x2F,0xFD]), enc(CSV))), expect: 'BLOCKED' },
+  { name: 'BZIP2 container',            blob: blobFrom('data.bz2', concat(enc('BZh91AY&SY'), enc(CSV))),            expect: 'BLOCKED' },
+  { name: 'PII embedded in real PNG',   blob: blobFrom('shot.png', concat(PNG, enc('\nSSN 123-45-6789\n'))),       expect: 'BLOCKED' },
+  { name: 'Plain prose README.md',      blob: blobFrom('README.md', enc(PROSE)),                                   expect: 'BLOCKED' },
 ];
 
 const G = '\x1b[32m', R = '\x1b[31m', Y = '\x1b[33m', D = '\x1b[2m', B = '\x1b[1m', X = '\x1b[0m';
 
-console.log(`\n${B}🛡️  BetterDLP Test Suite${X}\n${'─'.repeat(62)}`);
+console.log(`\n${B}🛡️  BetterDLP Test Suite${X}\n${'─'.repeat(72)}`);
 
 let passed = 0, failed = 0, failures = [];
 
 for (const t of TESTS) {
   try {
-    const blob = makeBlob(t.file);
-    const result = await inspectFile(blob);
+    const result = await inspectFile(t.blob);
     const actual = result.blocked ? 'BLOCKED' : 'ALLOWED';
     const ok = actual === t.expect;
     if (ok) passed++; else { failed++; failures.push({ ...t, actual, reason: result.reason }); }
     const icon = ok ? `${G}✓${X}` : `${R}✗${X}`;
     const col  = actual === 'BLOCKED' ? R : G;
-    console.log(`  ${icon} ${t.name.padEnd(26)} ${col}${actual.padEnd(8)}${X} ${D}${result.reason}${X}`);
+    console.log(`  ${icon} ${t.name.padEnd(28)} ${col}${actual.padEnd(8)}${X} ${D}${result.reason}${X}`);
   } catch (err) {
     failed++;
     failures.push({ ...t, actual: 'ERROR', reason: err.message });
-    console.log(`  ${Y}!${X} ${t.name.padEnd(26)} ${Y}ERROR${X}    ${err.message}`);
+    console.log(`  ${Y}!${X} ${t.name.padEnd(28)} ${Y}ERROR${X}    ${err.message}`);
   }
 }
 
-console.log(`\n${'─'.repeat(62)}`);
-console.log(`  ${B}Results:${X}  ${G}${passed} passed${X}  ${failed > 0 ? R : D}${failed} failed${X}  / ${TESTS.length} total\n`);
+// ─── Network-context tests (Core.inspectNetworkBytes) ─────────────────────────
+// These guard against false positives on ordinary app traffic: binary XHR/WS
+// bodies and JSON must NOT be blocked just for being non-image binary or for
+// containing a coincidental Luhn-valid digit run. Real document/archive
+// signatures and PII *in text* must still be blocked.
+function randomBinary(n, seed = 1) {
+  const out = new Uint8Array(n);
+  let s = seed;
+  for (let i = 0; i < n; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; out[i] = s & 0xff; }
+  return out;
+}
+const NET_TESTS = [
+  { name: 'Binary XHR blob (encrypted-like)',  bytes: randomBinary(2048, 7),                              expect: 'ALLOWED' },
+  { name: 'Binary blob w/ card digit run',     bytes: concat(randomBinary(64, 3), enc('4111111111111111'), randomBinary(64, 9)), expect: 'ALLOWED' },
+  { name: 'JSON w/ big numeric ID (snowflake)', bytes: enc(JSON.stringify({ id: '1719300000123456789', msg: 'hi', ts: 1719300000 })), expect: 'ALLOWED' },
+  { name: 'JSON body with real card number',   bytes: enc(JSON.stringify({ card: '4111 1111 1111 1111' })), expect: 'BLOCKED' },
+  { name: 'JSON body with real SSN',           bytes: enc(JSON.stringify({ ssn: '123-45-6789' })),        expect: 'BLOCKED' },
+  { name: 'PDF uploaded as raw body',          bytes: enc('%PDF-1.7\n...'),                                expect: 'BLOCKED' },
+  { name: 'DOCX uploaded as raw body',         bytes: DOCX,                                                expect: 'BLOCKED' },
+];
+for (const t of NET_TESTS) {
+  try {
+    const result = Core.inspectNetworkBytes(t.bytes);
+    const actual = result.blocked ? 'BLOCKED' : 'ALLOWED';
+    const ok = actual === t.expect;
+    if (ok) passed++; else { failed++; failures.push({ ...t, actual, reason: result.reason }); }
+    const icon = ok ? `${G}✓${X}` : `${R}✗${X}`;
+    const col  = actual === 'BLOCKED' ? R : G;
+    console.log(`  ${icon} ${('[net] ' + t.name).padEnd(28)} ${col}${actual.padEnd(8)}${X} ${D}${result.reason}${X}`);
+  } catch (err) {
+    failed++;
+    failures.push({ ...t, actual: 'ERROR', reason: err.message });
+    console.log(`  ${Y}!${X} ${('[net] ' + t.name).padEnd(28)} ${Y}ERROR${X}    ${err.message}`);
+  }
+}
+const TOTAL = TESTS.length + NET_TESTS.length;
+
+console.log(`\n${'─'.repeat(72)}`);
+console.log(`  ${B}Results:${X}  ${G}${passed} passed${X}  ${failed > 0 ? R : D}${failed} failed${X}  / ${TOTAL} total\n`);
 
 if (failures.length) {
   console.log(`${R}${B}Failures:${X}`);

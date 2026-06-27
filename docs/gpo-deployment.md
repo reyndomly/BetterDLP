@@ -29,9 +29,16 @@ The ID is fixed and shown on the extension's store page.
 
 ---
 
-## Step 2 — Force Install the Extension (Recommended)
+## Step 2 — Force Install the Extension (Required for the network backstop)
 
 Push the extension to all machines silently so users cannot remove it.
+
+> **Required for full protection.** Chrome (Manifest V3) grants the `webRequestBlocking`
+> permission — which powers the network backstop that inspects upload bodies from *any* JS
+> realm (Web/Service Workers, raw `fetch` bodies) — **only to force-installed extensions**. If
+> the extension is sideloaded or "Load unpacked" instead, the content-script layer still works
+> but the network backstop stays inactive and Chrome shows a `webRequestBlocking` warning on
+> the extension's card. Always force-install in production.
 
 **Via Group Policy:**
 
@@ -69,6 +76,7 @@ Open `regedit.exe` and create the following keys and values:
 | `enabled` | REG_DWORD | `1` | Master on/off (`0` = disabled) |
 | `mode` | REG_SZ | `allowlist` | See modes below |
 | `lockSettings` | REG_DWORD | `1` | Prevent users editing settings |
+| `networkEnforcement` | REG_DWORD | `1` | Enable the webRequest network backstop (`0` = disabled) |
 
 For the `domains` array, create a subkey named `domains` and add numbered entries:
 
@@ -85,9 +93,10 @@ $Base  = "HKLM:\SOFTWARE\Policies\Google\Chrome\3rdparty\extensions\$ExtID\polic
 
 New-Item -Path $Base -Force | Out-Null
 
-Set-ItemProperty -Path $Base -Name "enabled"      -Value 1            -Type DWord
-Set-ItemProperty -Path $Base -Name "mode"         -Value "allowlist"  -Type String
-Set-ItemProperty -Path $Base -Name "lockSettings" -Value 1            -Type DWord
+Set-ItemProperty -Path $Base -Name "enabled"            -Value 1            -Type DWord
+Set-ItemProperty -Path $Base -Name "mode"               -Value "allowlist"  -Type String
+Set-ItemProperty -Path $Base -Name "lockSettings"       -Value 1            -Type DWord
+Set-ItemProperty -Path $Base -Name "networkEnforcement" -Value 1            -Type DWord
 
 # Allowed domains (users can upload freely on these sites)
 $Domains = "$Base\domains"
@@ -128,6 +137,14 @@ Deploy this script via GPO **Computer Startup Script** or SCCM/Intune.
 | `mode` | string | `block_everywhere` | Protection mode |
 | `domains` | array | `[]` | Domain list for the selected mode |
 | `lockSettings` | boolean | `true` | Lock the settings UI |
+| `networkEnforcement` | boolean | `true` | Enable the webRequest network backstop |
+
+> **Network backstop requires force-install.** The `webRequest` blocking handler that inspects
+> upload bodies from any JS realm (Web/Service Workers, raw `fetch` bodies) depends on the
+> `webRequestBlocking` permission, which Chrome grants **only to policy-installed extensions**
+> (Step 2 above). Without force-install the content-script enforcement still works, but the
+> cross-realm network backstop stays inactive. Keep `networkEnforcement` at its default `true`
+> unless you need to disable the backstop for troubleshooting.
 
 ---
 
@@ -139,6 +156,12 @@ On a target endpoint:
 2. Open Chrome and navigate to `chrome://policy`
 3. Search for the extension ID — policy values should appear under it
 4. Open the BetterDLP popup → Settings tab should show the blue **"Managed by your organization"** banner with all controls greyed out
+5. **Confirm the network backstop is active:** open `chrome://extensions`, enable Developer mode,
+   click the extension's **service worker** link, and verify there is **no** `webRequestBlocking`
+   permission error in its console. (That error only appears on non-force-installed installs.)
+   To functionally test it, from a normal page's DevTools console run
+   `fetch('https://httpbin.org/post', { method: 'POST', body: new TextEncoder().encode('ssn 123-45-6789').buffer })`
+   — it should be cancelled and logged in the popup's audit log with vector `network (webRequest)`.
 
 ---
 
@@ -157,3 +180,30 @@ On a target endpoint:
 **Settings still editable after policy push:**
 - Confirm `lockSettings` is set to `1` (REG_DWORD)
 - Restart Chrome after `gpupdate /force`
+
+**Network backstop inactive / `webRequestBlocking` permission error in the service worker:**
+- This permission is granted **only to force-installed extensions** (Step 2). A sideloaded or
+  "Load unpacked" install cannot use it — force-install via `ExtensionInstallForcelist`.
+- Confirm `chrome://extensions` shows the extension as **"Installed by enterprise policy"** (not
+  "Unpacked"). The page-side enforcement (file picker, drag/drop, fetch/XHR) still works either way.
+- Ensure `networkEnforcement` is `1` (REG_DWORD) and not overridden to `0`.
+- The backstop reads policy on startup; after changing `networkEnforcement`, restart Chrome or
+  reload the extension's service worker.
+
+---
+
+## Testing in a dev environment (optional)
+
+To exercise the network backstop **before** a full GPO rollout, force-install the extension on a
+single test machine — `webRequestBlocking` will not activate under "Load unpacked":
+
+1. Pack the extension (`chrome://extensions` → **Pack extension**) or host the `.crx` on an
+   internal server with an update manifest.
+2. Add the extension ID + update URL to
+   `HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist` (same as Step 2), e.g. via:
+   ```powershell
+   $FL = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
+   New-Item -Path $FL -Force | Out-Null
+   Set-ItemProperty -Path $FL -Name "1" -Value "{EXTENSION_ID};https://internal.example.com/updates.xml" -Type String
+   ```
+3. `gpupdate /force`, restart Chrome, then run the functional test in **Step 4 → item 5**.
